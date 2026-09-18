@@ -59,26 +59,25 @@ without surprises.
 
 ### Releases + firmware self-update
 
-- **Build + publish binaries:** `pio run -e esp32-s3-devkitc-1 -t deploy`.
-  This writes into `releases/`:
-  - `mlb_scoreboard_latest.bin` (always overwritten),
-  - `mlb_scoreboard_<version>.bin` (permanent archive named from
-    `FIRMWARE_VERSION`),
-  - `manifest.json` (`{"version", "file", "url"}`).
-  Commit + push `releases/` to
-  `github.com/ubiconet/mlb_scoreboard` afterwards — the device fetches
-  the manifest from `raw.githubusercontent.com/ubiconet/mlb_scoreboard/
-  main/releases/manifest.json`.
-- **Self-update flow** (`src/ota_update.cpp`): ~90 s after boot the
-  core-0 data task fetches the manifest over TLS (the only TLS connection
-  left — the feeds run plain HTTP; see the note at the top of
-  `mlb_client.cpp`). If `version` differs from `FIRMWARE_VERSION`, it
-  downloads the binary and flashes it while the renderer shows the
-  "do not turn off" progress screen (`handleOtaUpdateScreen()`), then
-  reboots. A failed check/download leaves the current firmware running
-  and retries every 30 min.
-- Therefore: **bump `FIRMWARE_VERSION` before every deploy** or devices
-  will consider themselves current and skip the update.
+- **One-command release:** `pio run -e esp32-s3-devkitc-1 -t deploy`.
+  This builds the firmware, writes `releases/`
+  (`mlb_scoreboard_latest.bin`, permanent `mlb_scoreboard_<version>.bin`,
+  `manifest.json` with `{"version","file","url"}`), then **commits
+  `releases/` and pushes to GitHub** — the push is what publishes the
+  update. The target refuses to deploy when `FIRMWARE_VERSION` still
+  matches the published manifest version (devices only flash strictly
+  newer versions), so **bump `FIRMWARE_VERSION` before every deploy**.
+  GitHub's raw CDN caches the manifest ~5 min after a push.
+- **Self-update flow** (`src/ota_update.cpp`): shortly after the network
+  comes online (before any feed fetch — the TLS handshake needs the
+  pristine boot heap), the core-0 data task fetches the manifest over TLS
+  (the only TLS connection left; the feeds run plain HTTP — see the note
+  at the top of `mlb_client.cpp`). If the manifest version is strictly
+  newer than `FIRMWARE_VERSION`, manifest and binary download over ONE
+  reused TLS session while the renderer shows the "do not turn off"
+  progress screen (`handleOtaUpdateScreen()`), then the device reboots
+  into the new image. Failures leave the current firmware running and
+  retry (3 tries in the boot window, then every 30 min).
 
 ---
 
