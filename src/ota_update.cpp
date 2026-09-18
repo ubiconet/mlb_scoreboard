@@ -18,6 +18,7 @@ uint8_t sOtaBuf[4096];
 bool sCheckedOnce = false;
 bool sLastCheckOk = false;
 uint32_t sLastCheckAt = 0;
+uint8_t sBootAttempts = 0;
 
 // True when the manifest version is strictly NEWER than FIRMWARE_VERSION.
 // Both are "vMAJOR.MINOR"; anything unparsable is treated as not newer so
@@ -115,10 +116,16 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   // for otaBootGateReached(). The periodic recheck below is best-effort.
   if (onlineForMs < OTA_FIRST_CHECK_AFTER_ONLINE_MS) return;
   uint32_t now = millis();
-  uint32_t interval =
-      sLastCheckOk ? OTA_CHECK_INTERVAL_MS : OTA_CHECK_RETRY_MS;
-  if (sCheckedOnce && (now - sLastCheckAt) < interval) return;
-  sCheckedOnce = true;
+  if (sCheckedOnce) {
+    uint32_t interval =
+        sLastCheckOk ? OTA_CHECK_INTERVAL_MS : OTA_CHECK_RETRY_MS;
+    if ((now - sLastCheckAt) < interval) return;
+  } else if (sBootAttempts > 0 && (now - sLastCheckAt) < 4000) {
+    // Boot-window retry: the association-time TLS window is probabilistic
+    // on this network, so try a few times a few seconds apart while the
+    // heap is still pristine.
+    return;
+  }
   sLastCheckAt = now;
 
   // Run alone: drop the statsapi keep-alive session and let the data-task
@@ -156,8 +163,15 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
     http.end();
     Update.abort();
     sLastCheckOk = false;
+    sBootAttempts++;
+    // After a few failed boot-window attempts, let the feeds start; the
+    // 30-min retry takes over from there.
+    sCheckedOnce = (sBootAttempts >= 3);
     return;
   }
+  // Manifest fetched: from here on, every outcome counts as "checked" so
+  // the feeds can start.
+  sCheckedOnce = true;
   // Null-terminate and parse; values are copied out before the buffer is
   // reused (in-memory parses link strings into the buffer).
   manifestBuf[sizeof(manifestBuf) - 1] = '\0';
@@ -169,6 +183,7 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
     http.end();
     Update.abort();
     sLastCheckOk = false;
+    sCheckedOnce = true;  // fetched-but-bad: don't spin on it
     return;
   }
   char manifestVersion[16] = {};
@@ -187,6 +202,7 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   if (!sLastCheckOk) {
     http.end();
     Update.abort();
+    sCheckedOnce = true;  // fetched-but-incomplete: don't spin on it
     return;
   }
 
