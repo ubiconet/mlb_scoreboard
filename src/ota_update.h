@@ -15,3 +15,9 @@ void serviceOtaUpdates(uint32_t onlineForMs);
 // the data task skips its normal feed fetches in that window so the TLS
 // download never competes for heap or airtime.
 bool otaUpdateInProgress();
+
+// False during the first moments online until the boot OTA check has run:
+// the TLS handshake needs the still-pristine heap, so the feed fetches
+// (which fragment it with JSON pools) must wait. Turns true after the
+// check, or after OTA_BOOT_GATE_TIMEOUT_MS as a fallback.
+bool otaBootGateReached(uint32_t onlineForMs);

@@ -324,12 +324,19 @@ void mlbDataTaskLoop(void*) {
       sOnlineSince = 0;
     }
     if (sOnlineSince != 0) {
+      uint32_t onlineFor = millis() - sOnlineSince;
       // Firmware self-update check (manifest + OTA download). While a
       // download is running, hold off the feed fetches entirely: the TLS
       // download needs the heap and airtime to itself.
-      serviceOtaUpdates(millis() - sOnlineSince);
+      serviceOtaUpdates(onlineFor);
       if (otaUpdateInProgress()) {
         vTaskDelay(pdMS_TO_TICKS(100));
+        continue;
+      }
+      // The first OTA check runs before any feed fetch: its TLS handshake
+      // needs the pristine boot heap (see otaBootGateReached).
+      if (!otaBootGateReached(onlineFor)) {
+        vTaskDelay(pdMS_TO_TICKS(50));
         continue;
       }
 

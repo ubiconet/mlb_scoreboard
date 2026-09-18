@@ -19,6 +19,16 @@ bool sCheckedOnce = false;
 bool sLastCheckOk = false;
 uint32_t sLastCheckAt = 0;
 
+// True when the manifest version is strictly NEWER than FIRMWARE_VERSION.
+// Both are "vMAJOR.MINOR"; anything unparsable is treated as not newer so
+// a malformed manifest can never trigger a downgrade loop.
+bool manifestIsNewer(const char* manifestVersion) {
+  int fwMaj = 0, fwMin = 0, mfMaj = 0, mfMin = 0;
+  if (sscanf(FIRMWARE_VERSION, "v%d.%d", &fwMaj, &fwMin) != 2) return false;
+  if (sscanf(manifestVersion, "v%d.%d", &mfMaj, &mfMin) != 2) return false;
+  return mfMaj > fwMaj || (mfMaj == fwMaj && mfMin > fwMin);
+}
+
 // Fetches and parses the release manifest. Returns true and fills
 // version/url (both remain valid until the next call) on success.
 bool fetchManifest(char* version, size_t versionLen, String& url) {
@@ -175,6 +185,11 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
     DBG_PRINTF("[OTA] up to date (%s)\n", FIRMWARE_VERSION);
     return;
   }
+  if (!manifestIsNewer(manifestVersion)) {
+    DBG_PRINTF("[OTA] manifest %s not newer than %s, skipping\n",
+               manifestVersion, FIRMWARE_VERSION);
+    return;
+  }
   DBG_PRINTF("[OTA] update available: %s -> %s\n", FIRMWARE_VERSION,
              manifestVersion);
 
@@ -198,4 +213,12 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
 bool otaUpdateInProgress() {
   OtaStage stage = getOtaStage();
   return stage == OtaStage::DOWNLOADING || stage == OtaStage::REBOOTING;
+}
+
+bool otaBootGateReached(uint32_t onlineForMs) {
+  // The TLS handshake needs a pristine heap: two ~17 KB contiguous mbedtls
+  // buffers that the fragmented post-feed heap (largest block ~33 KB) can't
+  // satisfy. So the feed fetches must not start until the first OTA check
+  // has either run or been given up on for this session.
+  return sCheckedOnce || onlineForMs > OTA_BOOT_GATE_TIMEOUT_MS;
 }
