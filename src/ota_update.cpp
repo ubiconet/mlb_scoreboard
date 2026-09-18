@@ -72,6 +72,18 @@ bool fetchManifest(char* version, size_t versionLen, String& url) {
 bool downloadAndFlash(const String& url, const char* targetVersion) {
   setOtaTargetVersion(targetVersion);
 
+  // Claim the update context BEFORE opening the TLS connection: it needs a
+  // 4 KB contiguous staging buffer, and once the TLS session pins ~45 KB
+  // the fragmented heap can no longer satisfy that (the 2.0.x Updater
+  // reports the failed malloc as "No Error"). No flash is touched until
+  // the first write, so claiming early is safe.
+  if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+    DBG_PRINTF("[OTA] Update.begin failed: %s (freeHeap=%u maxAlloc=%u)\n",
+               Update.errorString(), ESP.getFreeHeap(),
+               ESP.getMaxAllocHeap());
+    return false;
+  }
+
   WiFiClientSecure client;
   client.setInsecure();
   client.setHandshakeTimeout(10);
@@ -81,17 +93,11 @@ bool downloadAndFlash(const String& url, const char* targetVersion) {
   // no-progress watchdog below.
   http.setTimeout(15000);
   int httpCode = http.GET();
-  DBG_PRINTF("[OTA] firmware -> HTTP %d (%d bytes)\n", httpCode,
-             (int)http.getSize());
+  int total = http.getSize();  // -1 when chunked
+  DBG_PRINTF("[OTA] firmware -> HTTP %d (%d bytes)\n", httpCode, total);
   if (httpCode != HTTP_CODE_OK) {
     http.end();
-    return false;
-  }
-
-  int total = http.getSize();  // -1 when chunked
-  if (!Update.begin(total > 0 ? (size_t)total : UPDATE_SIZE_UNKNOWN)) {
-    DBG_PRINTF("[OTA] Update.begin failed: %s\n", Update.errorString());
-    http.end();
+    Update.abort();
     return false;
   }
 
