@@ -317,11 +317,17 @@ void mlbDataTaskLoop(void*) {
 
   for (;;) {
     // Yield to the network task. We only do work when online.
+    static uint32_t sOnlineSince = 0;
     if (isOnline()) {
+      if (sOnlineSince == 0) sOnlineSince = millis();
+    } else {
+      sOnlineSince = 0;
+    }
+    if (sOnlineSince != 0) {
       // Firmware self-update check (manifest + OTA download). While a
       // download is running, hold off the feed fetches entirely: the TLS
       // download needs the heap and airtime to itself.
-      serviceOtaUpdates();
+      serviceOtaUpdates(millis() - sOnlineSince);
       if (otaUpdateInProgress()) {
         vTaskDelay(pdMS_TO_TICKS(100));
         continue;

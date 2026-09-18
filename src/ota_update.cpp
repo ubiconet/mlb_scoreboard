@@ -144,9 +144,14 @@ bool downloadAndFlash(const String& url, const char* targetVersion) {
 
 }  // namespace
 
-void serviceOtaUpdates() {
+void serviceOtaUpdates(uint32_t onlineForMs) {
+  // Check once, early: on this install's network path, TLS connections
+  // only succeed in the first half-minute or so after association (later
+  // attempts get refused at the handshake), so the OTA check — the only
+  // TLS user left, the feeds run plain HTTP — takes that window. The
+  // periodic recheck below is best-effort for healthier networks.
+  if (onlineForMs < OTA_FIRST_CHECK_AFTER_ONLINE_MS) return;
   uint32_t now = millis();
-  if (now < OTA_CHECK_DELAY_MS) return;  // let the boot feed fetches settle
   uint32_t interval =
       sLastCheckOk ? OTA_CHECK_INTERVAL_MS : OTA_CHECK_RETRY_MS;
   if (sCheckedOnce && (now - sLastCheckAt) < interval) return;

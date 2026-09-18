@@ -2,7 +2,7 @@
 
 // Serial
 static const uint32_t SERIAL_BAUD_RATE = 115200;
-static const char* FIRMWARE_VERSION = "v2.24";
+static const char* FIRMWARE_VERSION = "v2.25";
 
 // Compile-time debug log gate. Set to 0 in production builds to drop the
 // per-tick [DISPLAY]/[API CALL] printf noise (a Serial.printf at 115200 baud
@@ -108,7 +108,7 @@ static const uint32_t MLB_NEWS_RETRY_MS     = 60UL * 1000UL;       // Retry fail
 static const char* OTA_MANIFEST_URL =
     "https://raw.githubusercontent.com/ubiconet/mlb_scoreboard/main/"
     "releases/manifest.json";
-static const uint32_t OTA_CHECK_DELAY_MS = 90000; // let Wi-Fi, feeds, and clock settle first
+static const uint32_t OTA_FIRST_CHECK_AFTER_ONLINE_MS = 20000; // TLS only works near association on this network
 static const uint32_t OTA_CHECK_INTERVAL_MS = 12UL * 60UL * 60UL * 1000UL; // recheck
 static const uint32_t OTA_CHECK_RETRY_MS = 30UL * 60UL * 1000UL;  // retry failed checks
 static const uint32_t OTA_DOWNLOAD_STALL_MS = 30000;  // abort a download with no progress
