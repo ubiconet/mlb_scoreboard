@@ -54,17 +54,25 @@ static uint32_t sLastScheduleRenderAt = 0;
 // schedule snapshot we stay in WAITING (the data task publishes a valid (but
 // possibly empty) schedule within ~5 s).
 
-// Walk the other-games snapshot looking for a preferred team that has a live
-// game today.
-bool preferredTeamInOthers(const ScheduleSnapshot& sch, const int preferredTeams[3]) {
-  for (size_t i = 0; i < sch.otherCount; ++i) {
-    int a = atoi(sch.others[i].awayAbbrev);
-    int h = atoi(sch.others[i].homeAbbrev);
-    for (int p = 0; p < 3; ++p) {
-      if (a == preferredTeams[p] || h == preferredTeams[p]) return true;
+// Pick the gamePk of the highest-priority preferred team currently live,
+// straight from the other-games snapshot. This must not depend on any
+// previously-fetched linescore: the data task only polls a linescore once a
+// gamePk is selected here, so deriving the selection FROM a linescore can
+// never bootstrap out of waiting mode (the bug this replaces).
+int selectLiveGamePkForTeams(const ScheduleSnapshot& sch,
+                             const int preferredTeams[3]) {
+  for (int p = 0; p < 3; ++p) {
+    int teamId = preferredTeams[p];
+    if (teamId == 0) continue;
+    for (size_t i = 0; i < sch.otherCount; ++i) {
+      int a = atoi(sch.others[i].awayAbbrev);
+      int h = atoi(sch.others[i].homeAbbrev);
+      if (a == teamId || h == teamId) {
+        return sch.others[i].gamePk;
+      }
     }
   }
-  return false;
+  return 0;
 }
 
 void logPendingLiveDisplayState() {
@@ -197,20 +205,8 @@ void loop() {
   // gamePk the data task is currently fetching (the linescore snapshot's
   // gamePk) — if that happens to be the same game.
   if (newSchedule && sch.valid) {
-    int newGamePk = 0;
-    bool wantLive = preferredTeamInOthers(sch, preferredTeams);
-    if (wantLive) {
-      // Trust the data task: if it's already polling a linescore whose
-      // team ids match a preferred team, that's our game.
-      if (ls.valid && ls.gamePk > 0) {
-        for (int p = 0; p < 3 && newGamePk == 0; ++p) {
-          if (ls.awayTeamId == preferredTeams[p] ||
-              ls.homeTeamId == preferredTeams[p]) {
-            newGamePk = ls.gamePk;
-          }
-        }
-      }
-    }
+    // Select the followed game directly from the live-games snapshot.
+    int newGamePk = selectLiveGamePkForTeams(sch, preferredTeams);
 
     updateOtherGames(sch, newGamePk);
     bool gameChanged = newGamePk != getActiveGamePk();

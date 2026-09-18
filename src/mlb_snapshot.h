@@ -48,6 +48,7 @@ struct PlaySnapshot {
 };
 
 struct OtherGameLite {
+  int gamePk;
   char awayAbbrev[8];
   char homeAbbrev[8];
   int awayScore;

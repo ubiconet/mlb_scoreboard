@@ -123,6 +123,7 @@ void copyOtherGames(JsonObjectConst scheduleRoot, ScheduleSnapshot& dst) {
     const char* state = game["status"]["abstractGameState"] | "";
     if (strcmp(state, "Live") != 0) continue;
     OtherGameLite& slot = dst.others[dst.otherCount++];
+    slot.gamePk      = game["gamePk"] | 0;
     int awayTeamId = game["teams"]["away"]["team"]["id"] | 0;
     int homeTeamId = game["teams"]["home"]["team"]["id"] | 0;
     // Store team-id digits in the abbrev fields as a placeholder; the

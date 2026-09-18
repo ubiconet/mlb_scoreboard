@@ -4,6 +4,7 @@
 #include <time.h>
 
 #include "config.h"
+#include "fast_tft.h"
 #include "hardware_drivers.h"
 #include "scoreboard.h"
 #include "team_logos.h"
@@ -929,9 +930,11 @@ void drawNewsTickerFrame(int offset) {
     canvas.print(*p);
   }
   canvas.setTextWrap(true);
-  display.drawRGBBitmap(0, NEWS_TICKER_BAND_TOP,
-                        canvas.getBuffer() + NEWS_TICKER_BAND_TOP * 320,
-                        320, NEWS_TICKER_BAND_H);
+  // Direct-GPIO push: ~10-30x faster than drawRGBBitmap's digitalWrite
+  // bit-bang, so the old/new frame overlap during the sweep stays below a
+  // pixel of scroll (no visible tearing).
+  fastWriteWindow(0, NEWS_TICKER_BAND_TOP, 320, NEWS_TICKER_BAND_H,
+                  canvas.getBuffer() + NEWS_TICKER_BAND_TOP * 320);
 
   // One timing line per story (not per frame) so the effective scroll pace
   // is visible on Serial when tuning FRAME_MS / PX_PER_SEC.
@@ -1615,8 +1618,8 @@ bool handleOtaUpdateScreen() {
     canvas.setTextColor(COLOR_GOLD);
     canvas.setTextSize(2);
     drawCenteredText(canvas, pct, 160, 176);
-    display.drawRGBBitmap(20, 136, canvas.getBuffer() + 136 * 320 + 20,
-                          280, 68);
+    fastWriteWindow(20, 136, 280, 68,
+                    canvas.getBuffer() + 136 * 320 + 20);
   }
   return true;
 }
