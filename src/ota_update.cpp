@@ -29,78 +29,33 @@ bool manifestIsNewer(const char* manifestVersion) {
   return mfMaj > fwMaj || (mfMaj == fwMaj && mfMin > fwMin);
 }
 
-// Fetches and parses the release manifest. Returns true and fills
-// version/url (both remain valid until the next call) on success.
-bool fetchManifest(char* version, size_t versionLen, String& url) {
-  WiFiClientSecure client;
-  client.setInsecure();
-  // Default is 120 s — a wedged handshake must not stall the data task.
-  client.setHandshakeTimeout(10);
-  HTTPClient http;
-  http.begin(client, OTA_MANIFEST_URL);
-  http.setTimeout(10000);
-  int httpCode = http.GET();
-  DBG_PRINTF("[OTA] manifest -> HTTP %d\n", httpCode);
-  if (httpCode != HTTP_CODE_OK) {
-    http.end();
-    return false;
+// Reads exactly Content-Length bytes of an already-header-parsed response
+// into buf (leaving the keep-alive connection clean for the next request).
+// Returns the number of bytes read, or 0 on timeout/overflow.
+size_t readExactBody(HTTPClient& http, uint8_t* buf, size_t bufLen) {
+  WiFiClient* stream = http.getStreamPtr();
+  if (stream == nullptr) return 0;
+  int remaining = http.getSize();  // -1 when absent
+  if (remaining < 0 || (size_t)remaining > bufLen) return 0;
+  size_t got = 0;
+  uint32_t deadline = millis() + 8000;
+  while (got < (size_t)remaining && millis() < deadline) {
+    size_t avail = stream->available();
+    if (avail == 0) {
+      delay(2);
+      continue;
+    }
+    size_t n = stream->readBytes(buf + got, (size_t)remaining - got);
+    if (n == 0) continue;
+    got += n;
   }
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, http.getStream());
-  http.end();
-  if (error) {
-    DBG_PRINTF("[OTA] manifest parse error: %s\n", error.c_str());
-    return false;
-  }
-  strlcpy(version, doc["version"] | "", versionLen);
-  const char* urlField = doc["url"] | "";
-  if (urlField[0] != '\0') {
-    url = urlField;
-  } else {
-    // Manifest only carried a file name — resolve it against the manifest
-    // URL's directory.
-    const char* fileField = doc["file"] | "";
-    String base(OTA_MANIFEST_URL);
-    int slash = base.lastIndexOf('/');
-    url = base.substring(0, slash + 1) + fileField;
-  }
-  return version[0] != '\0' && url.length() > 0;
+  return got == (size_t)remaining ? got : 0;
 }
 
-// Downloads and flashes the given firmware image, publishing progress to
-// the renderer. Returns true when the new image is written and verified.
-bool downloadAndFlash(const String& url, const char* targetVersion) {
-  setOtaTargetVersion(targetVersion);
-
-  // Claim the update context BEFORE opening the TLS connection: it needs a
-  // 4 KB contiguous staging buffer, and once the TLS session pins ~45 KB
-  // the fragmented heap can no longer satisfy that (the 2.0.x Updater
-  // reports the failed malloc as "No Error"). No flash is touched until
-  // the first write, so claiming early is safe.
-  if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
-    DBG_PRINTF("[OTA] Update.begin failed: %s (freeHeap=%u maxAlloc=%u)\n",
-               Update.errorString(), ESP.getFreeHeap(),
-               ESP.getMaxAllocHeap());
-    return false;
-  }
-
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setHandshakeTimeout(10);
-  HTTPClient http;
-  http.begin(client, url);
-  // Large binary over lossy Wi-Fi: generous per-read timeout, plus a
-  // no-progress watchdog below.
-  http.setTimeout(15000);
-  int httpCode = http.GET();
-  int total = http.getSize();  // -1 when chunked
-  DBG_PRINTF("[OTA] firmware -> HTTP %d (%d bytes)\n", httpCode, total);
-  if (httpCode != HTTP_CODE_OK) {
-    http.end();
-    Update.abort();
-    return false;
-  }
-
+// Streams the body of an already-successful GET into the flash updater.
+// total is the Content-Length (-1 when unknown). Returns true when the
+// image was fully written and verified.
+bool streamBodyToFlash(HTTPClient& http, int total) {
   publishOtaStage(OtaStage::DOWNLOADING, 0);
   WiFiClient* stream = http.getStreamPtr();
   size_t written = 0;
@@ -115,8 +70,6 @@ bool downloadAndFlash(const String& url, const char* targetVersion) {
       if (millis() - lastByteAt > OTA_DOWNLOAD_STALL_MS) {
         DBG_PRINTF("[OTA] download stalled at %u bytes, aborting\n",
                    (unsigned)written);
-        Update.abort();
-        http.end();
         return false;
       }
       delay(5);
@@ -129,17 +82,13 @@ bool downloadAndFlash(const String& url, const char* targetVersion) {
     lastByteAt = millis();
     if (Update.write(sOtaBuf, got) != got) {
       DBG_PRINTF("[OTA] flash write failed: %s\n", Update.errorString());
-      Update.abort();
-      http.end();
       return false;
     }
     written += got;
-    if (total > 0) {
-      int pct = (int)(written * 100 / (size_t)total);
-      if (millis() - lastProgressAt >= 250) {
-        lastProgressAt = millis();
-        publishOtaStage(OtaStage::DOWNLOADING, pct);
-      }
+    if (total > 0 && millis() - lastProgressAt >= 250) {
+      lastProgressAt = millis();
+      publishOtaStage(OtaStage::DOWNLOADING,
+                      (int)(written * 100 / (size_t)total));
     }
   }
   http.end();
@@ -147,25 +96,23 @@ bool downloadAndFlash(const String& url, const char* targetVersion) {
   if (total > 0 && written != (size_t)total) {
     DBG_PRINTF("[OTA] short download: %u of %d bytes\n", (unsigned)written,
                total);
-    Update.abort();
     return false;
   }
   if (!Update.end(true)) {
     DBG_PRINTF("[OTA] Update.end failed: %s\n", Update.errorString());
     return false;
   }
-  DBG_PRINTF("[OTA] flashed %u bytes OK; rebooting\n", (unsigned)written);
+  DBG_PRINTF("[OTA] flashed %u bytes OK\n", (unsigned)written);
   return true;
 }
 
 }  // namespace
 
 void serviceOtaUpdates(uint32_t onlineForMs) {
-  // Check once, early: on this install's network path, TLS connections
-  // only succeed in the first half-minute or so after association (later
-  // attempts get refused at the handshake), so the OTA check — the only
-  // TLS user left, the feeds run plain HTTP — takes that window. The
-  // periodic recheck below is best-effort for healthier networks.
+  // Check once, early: the TLS handshake needs the still-pristine boot heap
+  // (two ~17 KB contiguous mbedtls buffers; the fragmented post-feed heap's
+  // largest block is too small), which is also why the feed fetches wait
+  // for otaBootGateReached(). The periodic recheck below is best-effort.
   if (onlineForMs < OTA_FIRST_CHECK_AFTER_ONLINE_MS) return;
   uint32_t now = millis();
   uint32_t interval =
@@ -174,32 +121,107 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   sCheckedOnce = true;
   sLastCheckAt = now;
 
-  // The manifest fetch is a TLS connection: run it alone, with the statsapi
-  // session dropped and no feed fetches racing it (otaUpdateInProgress()
-  // gates those in the data-task loop).
+  // Run alone: drop the statsapi keep-alive session and let the data-task
+  // loop hold the feed fetches until this returns.
   closeMlbApiSession();
 
-  char manifestVersion[16] = {};
-  String url;
-  if (!fetchManifest(manifestVersion, sizeof(manifestVersion), url)) {
+  // Claim the update context BEFORE any TLS connection: it needs a 4 KB
+  // contiguous staging buffer that the fragmented in-session heap can no
+  // longer satisfy (the 2.0.x Updater reports that failed malloc as
+  // "No Error"). No flash is touched until the first write.
+  if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
+    DBG_PRINTF("[OTA] Update.begin failed: %s (freeHeap=%u maxAlloc=%u)\n",
+               Update.errorString(), ESP.getFreeHeap(),
+               ESP.getMaxAllocHeap());
+    return;
+  }
+
+  // ONE TLS session serves both the manifest and, when an update is
+  // needed, the binary: this network path refuses a second fresh TLS
+  // connection opened moments after the first, so a second handshake for
+  // the download reliably failed.
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setHandshakeTimeout(10);  // default 120 s would stall the data task
+  HTTPClient http;
+  http.setReuse(true);
+
+  http.begin(client, OTA_MANIFEST_URL);
+  http.setTimeout(10000);
+  int httpCode = http.GET();
+  DBG_PRINTF("[OTA] manifest -> HTTP %d\n", httpCode);
+  uint8_t manifestBuf[512];
+  if (httpCode != HTTP_CODE_OK ||
+      readExactBody(http, manifestBuf, sizeof(manifestBuf)) == 0) {
+    http.end();
+    Update.abort();
     sLastCheckOk = false;
     return;
   }
-  sLastCheckOk = true;
-
-  if (strcmp(manifestVersion, FIRMWARE_VERSION) == 0) {
-    DBG_PRINTF("[OTA] up to date (%s)\n", FIRMWARE_VERSION);
+  // Null-terminate and parse; values are copied out before the buffer is
+  // reused (in-memory parses link strings into the buffer).
+  manifestBuf[sizeof(manifestBuf) - 1] = '\0';
+  JsonDocument doc;
+  DeserializationError error =
+      deserializeJson(doc, (const char*)manifestBuf);
+  if (error) {
+    DBG_PRINTF("[OTA] manifest parse error: %s\n", error.c_str());
+    http.end();
+    Update.abort();
+    sLastCheckOk = false;
     return;
   }
+  char manifestVersion[16] = {};
+  strlcpy(manifestVersion, doc["version"] | "", sizeof(manifestVersion));
+  String url;
+  const char* urlField = doc["url"] | "";
+  if (urlField[0] != '\0') {
+    url = urlField;
+  } else {
+    const char* fileField = doc["file"] | "";
+    String base(OTA_MANIFEST_URL);
+    int slash = base.lastIndexOf('/');
+    url = base.substring(0, slash + 1) + fileField;
+  }
+  sLastCheckOk = manifestVersion[0] != '\0' && url.length() > 0;
+  if (!sLastCheckOk) {
+    http.end();
+    Update.abort();
+    return;
+  }
+
   if (!manifestIsNewer(manifestVersion)) {
-    DBG_PRINTF("[OTA] manifest %s not newer than %s, skipping\n",
-               manifestVersion, FIRMWARE_VERSION);
+    DBG_PRINTF("[OTA] up to date (%s, manifest %s)\n", FIRMWARE_VERSION,
+               manifestVersion);
+    http.end();
+    Update.abort();
     return;
   }
   DBG_PRINTF("[OTA] update available: %s -> %s\n", FIRMWARE_VERSION,
              manifestVersion);
+  setOtaTargetVersion(manifestVersion);
 
-  if (downloadAndFlash(url, manifestVersion)) {
+  // Same host? Reuse the warm TLS session. Otherwise close it and open a
+  // fresh one (HTTPClient cannot re-target a keep-alive socket itself).
+  String manifestBase(OTA_MANIFEST_URL);
+  int slash = manifestBase.lastIndexOf('/');
+  bool sameHost = url.startsWith(manifestBase.substring(0, slash + 1));
+  if (!sameHost) {
+    http.end();
+  }
+
+  http.setTimeout(15000);  // large binary over lossy Wi-Fi
+  http.begin(client, url);
+  httpCode = http.GET();
+  int total = http.getSize();  // -1 when chunked
+  DBG_PRINTF("[OTA] firmware -> HTTP %d (%d bytes)\n", httpCode, total);
+  if (httpCode != HTTP_CODE_OK) {
+    http.end();
+    Update.abort();
+    return;
+  }
+
+  if (streamBodyToFlash(http, total)) {
     publishOtaStage(OtaStage::REBOOTING, 100);
     // Give the renderer a few seconds to show the reboot notice.
     uint32_t noticeUntil = millis() + 4000;
@@ -210,6 +232,7 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   // Failed update: tell the user, then fall back to normal operation. The
   // current firmware partition is untouched — Update only swaps on a fully
   // written + verified image.
+  Update.abort();
   publishOtaStage(OtaStage::FAILED, 0);
   uint32_t failUntil = millis() + 5000;
   while (millis() < failUntil) delay(100);
