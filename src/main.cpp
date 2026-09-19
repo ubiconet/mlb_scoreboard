@@ -121,8 +121,9 @@ void setup() {
   runCountLedTestLoop();
 
   renderBootSplash();
-  delay(BOOT_SPLASH_HOLD_MS);
-
+  // No blocking hold here: network services start immediately and connect
+  // behind the logo. loop() enforces the minimum splash time instead, so
+  // a fast Wi-Fi handshake can't cut the logo short.
   startNetworkServices();
   startNetworkTask();
   startMlbDataTask();  // core-0 linescore/play/schedule/news fetches
@@ -142,6 +143,13 @@ void setup() {
 }
 
 void loop() {
+  // Hold the boot logo for at least BOOT_SPLASH_HOLD_MS regardless of how
+  // quickly Wi-Fi connects or data arrives; the network tasks run on their
+  // own core and keep working behind the splash.
+  if (millis() < BOOT_SPLASH_HOLD_MS) {
+    return;
+  }
+
   handleNetworkDisplay();
   updateAtBatResultDisplay();
 

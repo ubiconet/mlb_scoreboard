@@ -719,13 +719,15 @@ void handleNetworkDisplay() {
     IPAddress ip(setupIpV);
     switch (redrawModeV) {
       case SETUP_CONNECTING:
-        renderConnectingScreen();
+      case SETUP_ONLINE_PORTAL:
+        // Connecting and online transitions draw nothing: the boot logo
+        // stays on screen while Wi-Fi connects behind it (loop() also
+        // holds the logo for BOOT_SPLASH_HOLD_MS). Only the AP
+        // provisioning instructions ever replace the logo — they're the
+        // one screen the device can't work without.
         break;
       case SETUP_AP_INSTRUCTIONS:
         renderAccessPointInstructions(ip.toString(), false);
-        break;
-      case SETUP_ONLINE_PORTAL:
-        renderAccessPointInstructions(ip.toString(), true);
         break;
     }
   }

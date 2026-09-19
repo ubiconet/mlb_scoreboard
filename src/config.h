@@ -2,7 +2,7 @@
 
 // Serial
 static const uint32_t SERIAL_BAUD_RATE = 115200;
-static const char* FIRMWARE_VERSION = "v2.40";
+static const char* FIRMWARE_VERSION = "v2.41";
 
 // Compile-time debug log gate. Set to 0 in production builds to drop the
 // per-tick [DISPLAY]/[API CALL] printf noise (a Serial.printf at 115200 baud
@@ -17,8 +17,10 @@ static const char* FIRMWARE_VERSION = "v2.40";
 #define DBG_PRINTF(fmt, ...) do {} while (0)
 #endif
 
-// How long the boot splash (MLB SCOREBOARD logo) stays up before network setup begins.
-static const uint32_t BOOT_SPLASH_HOLD_MS = 15000;
+// Minimum time the boot splash (MLB SCOREBOARD logo) stays on screen while
+// Wi-Fi connects behind it. The blocking delay and the Wi-Fi setup screens
+// are gone: the logo IS the connecting screen now.
+static const uint32_t BOOT_SPLASH_HOLD_MS = 10000;
 
 // 2.0-inch ST7789V TFT (320x240, SPI)
 static const int TFT_SCLK_PIN = 13;
@@ -58,13 +60,12 @@ static const uint32_t NETWORK_PROBE_INTERVAL_MS = 5000;
 static const uint32_t NETWORK_RECONNECT_GRACE_MS = 15000; // sustained drop before re-provisioning
 static const uint32_t NETWORK_RECONNECT_RETRY_MS = 5000;
 static const uint32_t NETWORK_DEBUG_INTERVAL_MS = 10000;
-static const uint32_t NETWORK_SETUP_SCREEN_MS = 15000;    // grace after going online before scoreboard
+static const uint32_t NETWORK_SETUP_SCREEN_MS = 0;         // online screen no longer drawn; release scoreboard immediately
 static const uint32_t NETWORK_SCAN_REFRESH_MS = 30000;    // portal scan-list cache age
 static const uint32_t NETWORK_PROVISIONING_RETRY_MS = 60000; // retry saved Wi-Fi after this long in AP mode
-// Minimum time the Wi-Fi setup/connecting screen stays up on the very first boot connect,
-// so it isn't just a flash when a saved network connects almost instantly. Only applies
-// once at boot; later reconnects after a drop are not artificially delayed.
-static const uint32_t NETWORK_FIRST_CONNECT_MIN_MS = 15000;
+// Formerly held the (now removed) Wi-Fi connecting screen up at boot; the
+// boot logo covers that role. Kept at zero so nothing delays going online.
+static const uint32_t NETWORK_FIRST_CONNECT_MIN_MS = 0;
 
 // POSIX timezone used to convert MLB's UTC gameDate values to the local clock.
 // Change this for the location where the scoreboard is installed.
