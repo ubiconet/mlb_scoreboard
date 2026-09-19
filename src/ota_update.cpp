@@ -19,6 +19,10 @@ bool sCheckedOnce = false;
 bool sLastCheckOk = false;
 uint32_t sLastCheckAt = 0;
 uint8_t sBootAttempts = 0;
+// The association-time TLS window opens late or not at all on some boots
+// (the network path refuses the connection), so keep trying across a wider
+// span of the boot instead of giving up after three quick shots.
+const uint8_t OTA_BOOT_MAX_ATTEMPTS = 6;
 
 // True when the manifest version is strictly NEWER than FIRMWARE_VERSION.
 // Both are "vMAJOR.MINOR"; anything unparsable is treated as not newer so
@@ -120,10 +124,10 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
     uint32_t interval =
         sLastCheckOk ? OTA_CHECK_INTERVAL_MS : OTA_CHECK_RETRY_MS;
     if ((now - sLastCheckAt) < interval) return;
-  } else if (sBootAttempts > 0 && (now - sLastCheckAt) < 4000) {
+  } else if (sBootAttempts > 0 && (now - sLastCheckAt) < 5000) {
     // Boot-window retry: the association-time TLS window is probabilistic
-    // on this network, so try a few times a few seconds apart while the
-    // heap is still pristine.
+    // on this network, so keep retrying across the first ~100 s of uptime
+    // while the heap is still pristine.
     return;
   }
   sLastCheckAt = now;
@@ -164,9 +168,9 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
     Update.abort();
     sLastCheckOk = false;
     sBootAttempts++;
-    // After a few failed boot-window attempts, let the feeds start; the
-    // 30-min retry takes over from there.
-    sCheckedOnce = (sBootAttempts >= 3);
+    // After the boot attempts are exhausted, let the feeds start; the
+    // periodic retry takes over from there.
+    sCheckedOnce = (sBootAttempts >= OTA_BOOT_MAX_ATTEMPTS);
     return;
   }
   // Manifest fetched: from here on, every outcome counts as "checked" so

@@ -2,7 +2,7 @@
 
 // Serial
 static const uint32_t SERIAL_BAUD_RATE = 115200;
-static const char* FIRMWARE_VERSION = "v2.38";
+static const char* FIRMWARE_VERSION = "v2.39";
 
 // Compile-time debug log gate. Set to 0 in production builds to drop the
 // per-tick [DISPLAY]/[API CALL] printf noise (a Serial.printf at 115200 baud
@@ -111,6 +111,6 @@ static const char* OTA_MANIFEST_URL =
 static const uint32_t OTA_FIRST_CHECK_AFTER_ONLINE_MS = 15000; // TLS needs the pristine boot heap
 static const uint32_t OTA_BOOT_GATE_TIMEOUT_MS = 90000; // feeds start anyway if no check happened
 static const uint32_t OTA_CHECK_INTERVAL_MS = 12UL * 60UL * 60UL * 1000UL; // recheck
-static const uint32_t OTA_CHECK_RETRY_MS = 30UL * 60UL * 1000UL;  // retry failed checks
+static const uint32_t OTA_CHECK_RETRY_MS = 10UL * 60UL * 1000UL;  // retry failed checks — keep after a flaky network
 static const uint32_t OTA_DOWNLOAD_STALL_MS = 30000;  // abort a download with no progress
 
