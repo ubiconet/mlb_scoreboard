@@ -23,3 +23,24 @@ The deploy target:
 
 Note: GitHub's raw CDN caches the manifest for ~5 minutes after a push, so
 a device may see the previous manifest for a few minutes after a deploy.
+
+## Manual update (when the device can't reach GitHub over TLS)
+
+Some networks block/drop port 443 from the scoreboard, which silently
+defeats the auto-update. The device's built-in web portal has an uploader
+that works over plain HTTP on your LAN — from a browser:
+
+1. Open `http://mlb-scoreboard.local/update` (or the device's IP, shown on
+   the TFT setup screen and the `[NET] Online: ip=...` serial line).
+2. Choose `releases/mlb_scoreboard_latest.bin`.
+3. Click **Upload & Flash** — the scoreboard reboots into the new firmware.
+
+Or from PowerShell:
+
+```powershell
+curl.exe -F "update=@releases\mlb_scoreboard_latest.bin" http://<device-ip>/update
+```
+
+The auto-update keeps running in the background (6 attempts at boot, then
+every 10 minutes) and will catch up on its own whenever the network allows
+the TLS connection through.
