@@ -250,7 +250,7 @@ const char* shortInningState(const char* state) {
 }
 
 size_t tickerSlideCount() {
-  return 1 + (otherGameCount + 2) / 3; // On Deck slide + league slides
+  return 1 + otherGameCount; // On Deck slide + one league game per slide
 }
 
 void drawLedDigit(Adafruit_GFX& target, int startX, int startY, int digit) {
@@ -1063,31 +1063,48 @@ void drawBottomPanel(Adafruit_GFX& target, const LinescoreSnapshot& ls) {
     target.setCursor(18, 208);
     printClipped(target, line, 47);
   } else {
-    // Around the league: scores of other games currently in progress
+    // Around the league: ONE other live game per slide, in large type —
+    // the earlier 3-rows-of-size-1 layout was unreadable at a glance.
     target.setTextSize(1);
     target.setTextColor(COLOR_GOLD);
     target.setCursor(18, 168);
     target.print("AROUND THE LEAGUE");
 
-    size_t slideBase = (tickerSlide - 1) * 3;
-    target.setTextColor(ST77XX_WHITE);
-    int y = 184;
-    for (size_t i = slideBase; i < slideBase + 3 && i < otherGameCount; i++) {
-      const OtherGameInfo& game = otherGames[i];
-      char row[40];
-      const char* half = shortInningState(game.inningState);
-      if (half[0] != '\0' && game.inningOrdinal[0] != '\0') {
-        snprintf(row, sizeof(row), "%s %d - %d %s   %s %s",
-                 game.awayAbbrev, game.awayScore, game.homeScore, game.homeAbbrev,
-                 half, game.inningOrdinal);
-      } else {
-        snprintf(row, sizeof(row), "%s %d - %d %s",
-                 game.awayAbbrev, game.awayScore, game.homeScore, game.homeAbbrev);
-      }
-      target.setCursor(18, y);
-      target.print(row);
-      y += 16;
+    const OtherGameInfo& game = otherGames[tickerSlide - 1];
+
+    // Inning tag on the header row, right-aligned.
+    char tag[24] = "";
+    const char* half = shortInningState(game.inningState);
+    if (half[0] != '\0' && game.inningOrdinal[0] != '\0') {
+      snprintf(tag, sizeof(tag), "%s %s", half, game.inningOrdinal);
     }
+    if (tag[0] != '\0') {
+      int16_t x1, y1;
+      uint16_t tw, th;
+      target.getTextBounds(tag, 0, 0, &x1, &y1, &tw, &th);
+      target.setCursor(302 - (int)tw, 168);
+      target.print(tag);
+    }
+
+    // Away row then home row: abbreviation left, score right-aligned, both
+    // at textSize 3 (18 px per char cell).
+    char score[8];
+    target.setTextSize(3);
+    target.setTextColor(ST77XX_WHITE);
+    target.setCursor(18, 180);
+    target.print(game.awayAbbrev);
+    snprintf(score, sizeof(score), "%d", game.awayScore);
+    target.setTextColor(COLOR_GOLD);
+    target.setCursor(302 - (int)(strlen(score) * 18), 180);
+    target.print(score);
+
+    target.setTextColor(ST77XX_WHITE);
+    target.setCursor(18, 206);
+    target.print(game.homeAbbrev);
+    snprintf(score, sizeof(score), "%d", game.homeScore);
+    target.setTextColor(COLOR_GOLD);
+    target.setCursor(302 - (int)(strlen(score) * 18), 206);
+    target.print(score);
   }
 }
 } // namespace
