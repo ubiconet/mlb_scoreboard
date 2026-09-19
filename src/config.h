@@ -2,7 +2,7 @@
 
 // Serial
 static const uint32_t SERIAL_BAUD_RATE = 115200;
-static const char* FIRMWARE_VERSION = "v2.36";
+static const char* FIRMWARE_VERSION = "v2.37";
 
 // Compile-time debug log gate. Set to 0 in production builds to drop the
 // per-tick [DISPLAY]/[API CALL] printf noise (a Serial.printf at 115200 baud
@@ -82,7 +82,7 @@ static const uint32_t MLB_RETRY_BACKOFF_MAX_MS = 120000; // Exponential backoff 
 // (per ADR-0002) instead of retrying every 15 s lets those windows expire.
 static const uint32_t MLB_NTP_READY_RETRY_MS = 5000;     // short retry while awaiting first time sync
 static const uint32_t MLB_POSTGAME_GRACE_MS = 300000;    // Keep final followed game visible for 5 min
-static const uint32_t MLB_AT_BAT_RESULT_DISPLAY_MS = 4000; // Full-screen result card duration
+static const uint32_t MLB_AT_BAT_RESULT_DISPLAY_MS = 5000; // Full-screen result card duration
 static const uint32_t MLB_CAROUSEL_ROTATE_MS = 5000;      // Rotate live-game stat ticker every 5s
 static const uint32_t MLB_UPCOMING_GAMES_ROTATE_MS = 5000;  // Show each upcoming-game card for 5s
 // News ticker pacing. The software-SPI band push is the hard limit: the

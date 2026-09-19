@@ -1114,7 +1114,8 @@ void renderBootSplash() {
   display.drawRGBBitmap(0, 0, canvas.getBuffer(), 320, 240);
 }
 
-void showAtBatResult(const char* batterName, const char* description) {
+void showAtBatResult(const char* batterName, const char* event,
+                     const char* description) {
   GFXcanvas16& canvas = getCanvas();
   canvas.fillScreen(COLOR_BG);
 
@@ -1125,15 +1126,28 @@ void showAtBatResult(const char* batterName, const char* description) {
 
   canvas.setTextColor(ST77XX_WHITE);
   canvas.setTextSize(2);
-  drawWrappedText(canvas, batterName, 20, 66, 280, 12, 22, 2);
+  drawWrappedText(canvas, batterName, 20, 62, 280, 12, 22, 2);
 
+  // The short outcome ("Single", "Strikeout", "Home Run") is the headline
+  // the card exists for; the sentence below carries the detail.
   canvas.setTextColor(COLOR_LED_RED);
-  canvas.setTextSize(2);
-  drawWrappedText(canvas, description, 20, 120, 280, 12, 22, 4);
+  canvas.setTextSize(3);
+  drawCenteredText(canvas, event[0] != '\0' ? event : "", 160, 116);
+
+  canvas.setTextColor(ST77XX_WHITE);
+  canvas.setTextSize(1);
+  drawWrappedText(canvas, description, 20, 160, 280, 6, 12, 5);
 
   display.drawRGBBitmap(0, 0, canvas.getBuffer(), 320, 240);
+  // The card clobbered the whole screen: invalidate the linescore's
+  // dirty-rect tracker so the return render repaints everything. Without
+  // this the tracker saw "nothing changed" and the card stayed stuck on
+  // screen after its dwell expired.
+  gHasRendered = false;
   atBatResultStartedAt = millis();
   atBatResultVisible = true;
+  DBG_PRINTF("[DISPLAY] at-bat result: %s — %s\n", batterName,
+             event[0] != '\0' ? event : description);
 }
 
 void updateAtBatResultDisplay() {
@@ -1151,6 +1165,8 @@ void resetAtBatResultDisplay() {
   atBatResultVisible = false;
   atBatResultStartedAt = 0;
 }
+
+bool isAtBatResultVisible() { return atBatResultVisible; }
 
 void renderLinescore(const LinescoreSnapshot& ls) {
   currentLinescore    = ls;

@@ -293,8 +293,8 @@ bool fetchMlbLinescore(int gamePk, JsonDocument& doc) {
 bool fetchMlbLatestPlay(int gamePk, JsonDocument& doc) {
   String url = "http://statsapi.mlb.com/api/v1/game/";
   url += String(gamePk);
-  url += "/playByPlay?fields=allPlays,about,atBatIndex,result,description,"
-         "eventType,matchup,batter,fullName";
+  url += "/playByPlay?fields=allPlays,about,atBatIndex,isComplete,"
+         "result,event,description,matchup,batter,fullName";
 
   int httpCode = statsApiGet(url, 5000);
   logApiCall("play_by_play", httpCode);
@@ -303,8 +303,9 @@ bool fetchMlbLatestPlay(int gamePk, JsonDocument& doc) {
     doc.clear();
     JsonDocument filter;
     filter["allPlays"][0]["about"]["atBatIndex"] = true;
+    filter["allPlays"][0]["about"]["isComplete"] = true;
+    filter["allPlays"][0]["result"]["event"] = true;
     filter["allPlays"][0]["result"]["description"] = true;
-    filter["allPlays"][0]["result"]["eventType"] = true;
     filter["allPlays"][0]["matchup"]["batter"]["fullName"] = true;
 
     DeserializationError error =

@@ -99,12 +99,31 @@ void copyPlaySnapshot(JsonObjectConst src, PlaySnapshot& dst) {
     dst.valid = false;
     return;
   }
-  JsonObjectConst latest = plays[plays.size() - 1];
+  // allPlays ends with the IN-PROGRESS at-bat (empty result fields, new
+  // batter). Snapshot the latest COMPLETED play instead: its atBatIndex
+  // only advances when a result actually exists, which is what the
+  // renderer's card trigger keys on — the in-progress entry used to
+  // consume the index early and suppress (or blank) the result card.
+  JsonObjectConst latest;
+  for (size_t i = plays.size(); i-- > 0;) {
+    JsonObjectConst play = plays[i];
+    if (play["about"]["isComplete"] | false) {
+      latest = play;
+      break;
+    }
+  }
+  if (latest.isNull()) {
+    dst.valid = false;  // game just started, nothing completed yet
+    return;
+  }
   dst.atBatIndex  = latest["about"]["atBatIndex"] | -1;
   dst.batterId    = latest["matchup"]["batter"]["id"] | 0;
   strlcpy(dst.batterName,
           latest["matchup"]["batter"]["fullName"] | "",
           sizeof(dst.batterName));
+  strlcpy(dst.event,
+          latest["result"]["event"] | "",
+          sizeof(dst.event));
   strlcpy(dst.description,
           latest["result"]["description"] | "",
           sizeof(dst.description));

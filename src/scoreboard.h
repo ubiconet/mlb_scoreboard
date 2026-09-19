@@ -33,9 +33,12 @@ void renderBootSplash();
 void renderLinescore(const LinescoreSnapshot& linescore);
 
 // Shows a completed plate-appearance result for a short time, then restores the live panel.
-void showAtBatResult(const char* batterName, const char* description);
+void showAtBatResult(const char* batterName, const char* event,
+                     const char* description);
 void updateAtBatResultDisplay();
 void resetAtBatResultDisplay();
+// True while the full-screen at-bat result card owns the display.
+bool isAtBatResultVisible();
 
 // Renders the waiting state and clears scores/count LEDs until a preferred team is live.
 void renderWaiting(JsonObjectConst upcomingSchedule,

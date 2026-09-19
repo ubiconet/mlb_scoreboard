@@ -234,14 +234,14 @@ void loop() {
   } else {
     // LIVE_GAME: each fresh linescore drives the live screen; each fresh
     // play snapshot may fire the at-bat result card.
-    if (newLinescore && ls.valid) {
+    if (newLinescore && ls.valid && !isAtBatResultVisible()) {
       renderLinescore(ls);
       logLiveDisplayState(ls, ls.gamePk);
     }
     if (newPlay && play.valid) {
       if (atBatBaselineReady && play.atBatIndex > lastAtBatIndex &&
           play.description[0] != '\0') {
-        showAtBatResult(play.batterName, play.description);
+        showAtBatResult(play.batterName, play.event, play.description);
       }
       if (play.atBatIndex >= 0) {
         lastAtBatIndex = play.atBatIndex;

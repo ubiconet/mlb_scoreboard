@@ -43,7 +43,8 @@ struct PlaySnapshot {
   int atBatIndex;
   int batterId;
   char batterName[32];
-  char description[160];
+  char event[24];       // short outcome: "Single", "Strikeout", "Walk"...
+  char description[160]; // full play-by-play sentence
   bool valid;
 };
 
