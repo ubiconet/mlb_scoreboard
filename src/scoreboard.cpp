@@ -1065,14 +1065,14 @@ void drawBottomPanel(Adafruit_GFX& target, const LinescoreSnapshot& ls) {
   } else {
     // Around the league: ONE other live game per slide, in large type —
     // the earlier 3-rows-of-size-1 layout was unreadable at a glance.
-    target.setTextSize(1);
-    target.setTextColor(COLOR_GOLD);
-    target.setCursor(18, 168);
-    target.print("AROUND THE LEAGUE");
-
     const OtherGameInfo& game = otherGames[tickerSlide - 1];
 
-    // Inning tag on the header row, right-aligned.
+    // Header twice the old size, horizontally centered; inning tag small,
+    // right-aligned on the same baseline.
+    target.setTextSize(2);
+    target.setTextColor(COLOR_GOLD);
+    drawCenteredText(target, "AROUND THE LEAGUE", 160, 163);
+
     char tag[24] = "";
     const char* half = shortInningState(game.inningState);
     if (half[0] != '\0' && game.inningOrdinal[0] != '\0') {
@@ -1082,28 +1082,29 @@ void drawBottomPanel(Adafruit_GFX& target, const LinescoreSnapshot& ls) {
       int16_t x1, y1;
       uint16_t tw, th;
       target.getTextBounds(tag, 0, 0, &x1, &y1, &tw, &th);
-      target.setCursor(302 - (int)tw, 168);
+      target.setTextSize(1);
+      target.setCursor(302 - (int)tw, 166);
       target.print(tag);
     }
 
     // Away row then home row: abbreviation left, score right-aligned, both
-    // at textSize 3 (18 px per char cell).
+    // at textSize 3 (18 px per char cell, 24 px tall).
     char score[8];
     target.setTextSize(3);
     target.setTextColor(ST77XX_WHITE);
-    target.setCursor(18, 180);
+    target.setCursor(18, 181);
     target.print(game.awayAbbrev);
     snprintf(score, sizeof(score), "%d", game.awayScore);
     target.setTextColor(COLOR_GOLD);
-    target.setCursor(302 - (int)(strlen(score) * 18), 180);
+    target.setCursor(302 - (int)(strlen(score) * 18), 181);
     target.print(score);
 
     target.setTextColor(ST77XX_WHITE);
-    target.setCursor(18, 206);
+    target.setCursor(18, 207);
     target.print(game.homeAbbrev);
     snprintf(score, sizeof(score), "%d", game.homeScore);
     target.setTextColor(COLOR_GOLD);
-    target.setCursor(302 - (int)(strlen(score) * 18), 206);
+    target.setCursor(302 - (int)(strlen(score) * 18), 207);
     target.print(score);
   }
 }
