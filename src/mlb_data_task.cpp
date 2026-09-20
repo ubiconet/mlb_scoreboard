@@ -348,6 +348,14 @@ void mlbDataTaskLoop(void*) {
       // Firmware self-update check (manifest + OTA download). While a
       // download is running, hold off the feed fetches entirely: the TLS
       // download needs the heap and airtime to itself.
+      if (otaCheckRequested()) {
+        // Free the JSON pool and response buffer so a portal-triggered
+        // mid-session TLS check gets the largest contiguous heap we can
+        // offer (see the note at the top of ota_update.cpp).
+        mlbDoc.clear();
+        mlbDoc.shrinkToFit();
+        releaseMlbBuffers();
+      }
       serviceOtaUpdates(onlineFor);
       if (otaUpdateInProgress()) {
         vTaskDelay(pdMS_TO_TICKS(100));

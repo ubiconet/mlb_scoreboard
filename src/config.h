@@ -2,7 +2,7 @@
 
 // Serial
 static const uint32_t SERIAL_BAUD_RATE = 115200;
-static const char* FIRMWARE_VERSION = "v2.56";
+static const char* FIRMWARE_VERSION = "v2.57";
 
 // Compile-time debug log gate. Set to 0 in production builds to drop the
 // per-tick [DISPLAY]/[API CALL] printf noise (a Serial.printf at 115200 baud
@@ -118,6 +118,12 @@ static const uint32_t MLB_NEWS_RETRY_MS     = 60UL * 1000UL;       // Retry fail
 static const char* OTA_MANIFEST_URL =
     "https://raw.githubusercontent.com/ubiconet/mlb_scoreboard/main/"
     "releases/manifest.json";
+// Displayed on the setup portal so a user doing a manual update knows
+// where the current binary lives. Must stay in sync with the manifest
+// URL above (same folder, deployed by `pio run -t deploy`).
+static const char* OTA_LATEST_BIN_URL =
+    "https://raw.githubusercontent.com/ubiconet/mlb_scoreboard/main/"
+    "releases/mlb_scoreboard_latest.bin";
 static const uint32_t OTA_FIRST_CHECK_AFTER_ONLINE_MS = 5000; // runs behind the boot screens; needs the pristine boot heap
 static const uint32_t OTA_BOOT_GATE_TIMEOUT_MS = 25000; // feeds must not starve behind failed TLS attempts
 static const uint32_t OTA_CHECK_INTERVAL_MS = 12UL * 60UL * 60UL * 1000UL; // recheck

@@ -10,6 +10,10 @@
 #include <WiFi.h>
 #include <qrcode.h>
 
+#include "config.h"
+#include "ota_update.h"
+#include "scoreboard.h"
+
 #include <Adafruit_ST7789.h>
 
 #include "config.h"
@@ -469,6 +473,24 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
   if (clockDisplayEnabled) page += " checked";
   page += R"html(>Display current time on score boards when no game is live</label>
 <button type="submit">Save & Connect Scoreboard</button></form>
+<hr><h3>Firmware Update</h3>
+<p class="hint">Installed: )html" + String(FIRMWARE_VERSION) + R"html(. Automatic checks run at boot and every 10 minutes.</p>
+<button type="button" style="margin-top:8px" onclick="otaCheck()">Check for Update Now</button>
+<p class="hint" id="otaStatus">&nbsp;</p>
+<p class="hint">Latest binary (for manual updates):<br>
+<a style="color:#f5c400;word-break:break-all" href=")html" + String(OTA_LATEST_BIN_URL) + R"html(">)html" + String(OTA_LATEST_BIN_URL) + R"html(</a></p>
+<p><a style="color:#f5c400" href="/update">Upload a firmware file manually</a></p>
+<script>
+var otaWaiting=false;
+function otaCheck(){otaWaiting=true;document.getElementById('otaStatus').textContent='Checking...';fetch('/ota/check',{method:'POST'})}
+setInterval(function(){fetch('/ota/status').then(function(r){return r.json()}).then(function(s){var e=document.getElementById('otaStatus');
+if(s.stage==='DOWNLOADING'){otaWaiting=false;e.textContent='Downloading update '+s.progress+'% - watch the scoreboard; do not power off.'}
+else if(s.stage==='REBOOTING'){otaWaiting=false;e.textContent='Update installed - rebooting...'}
+else if(s.stage==='FAILED'){otaWaiting=false;e.textContent='Update failed (network may block GitHub) - use the manual upload below.'}
+else if(otaWaiting&&s.checked&&!s.ok){otaWaiting=false;e.textContent='Check failed - this network may block GitHub. Use the manual upload below.'}
+else if(otaWaiting&&s.checked&&s.ok){otaWaiting=false;e.textContent='No update available - firmware is current.'}
+})},2000);
+</script>
 <hr><p class="hint"><a style="color:#f5c400" href="/update">Upload new firmware (.bin)</a></p></main></body></html>)html";
   server.send(200, "text/html", page);
 }
@@ -574,6 +596,34 @@ void serveConfig() {
   server.send(200, "application/json", readConfig());
 }
 
+void handleOtaCheckNow() {
+  markPortalActivity();
+  if (!isOnline()) {
+    server.send(503, "text/plain", "Not online");
+    return;
+  }
+  requestOtaCheckNow();
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void serveOtaStatus() {
+  markPortalActivity();
+  const char* stage = "NONE";
+  switch (getOtaStage()) {
+    case OtaStage::DOWNLOADING: stage = "DOWNLOADING"; break;
+    case OtaStage::REBOOTING:   stage = "REBOOTING";   break;
+    case OtaStage::FAILED:      stage = "FAILED";      break;
+    default: break;
+  }
+  char body[96];
+  snprintf(body, sizeof(body),
+           "{\"stage\":\"%s\",\"progress\":%d,\"checked\":%s,\"ok\":%s}",
+           stage, getOtaProgress(),
+           otaEverChecked() ? "true" : "false",
+           otaLastCheckOk() ? "true" : "false");
+  server.send(200, "application/json", body);
+}
+
 void serveUpdatePage() {
   markPortalActivity();
   server.send(200, "text/html", R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -629,6 +679,8 @@ void registerPortalRoutes() {
   server.on("/save", HTTP_POST, saveNetwork);
   server.on("/config", HTTP_POST, saveConfig);
   server.on("/update", HTTP_GET, serveUpdatePage);
+  server.on("/ota/check", HTTP_POST, handleOtaCheckNow);
+  server.on("/ota/status", HTTP_GET, serveOtaStatus);
   server.on("/update", HTTP_POST, handleUpdateResult, handleUpdateUpload);
   server.onNotFound(redirectToPortal);
 }

@@ -167,6 +167,10 @@ void closeMlbApiSession() {
   resetMlbApiSession();
 }
 
+void releaseMlbBuffers() {
+  gResponseBody = String();
+}
+
 bool fetchMlbSchedule(const char* dateStr, JsonDocument& doc) {
   // A null/empty date asks the server for today's slate (US game-day), so the
   // device never needs its own clock. hydrate+fields pulls per-game inning

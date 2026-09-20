@@ -21,3 +21,12 @@ bool otaUpdateInProgress();
 // (which fragment it with JSON pools) must wait. Turns true after the
 // check, or after OTA_BOOT_GATE_TIMEOUT_MS as a fallback.
 bool otaBootGateReached(uint32_t onlineForMs);
+
+// Ask the data task to run an update check on its next loop pass,
+// bypassing the retry throttle (the setup portal's "Check for update
+// now" button). Mid-session checks run with the feed buffers released to
+// give the TLS handshake the largest contiguous heap available.
+void requestOtaCheckNow();
+bool otaCheckRequested();      // true while a request is pending
+bool otaEverChecked();         // at least one check completed
+bool otaLastCheckOk();         // last check reached and parsed the manifest

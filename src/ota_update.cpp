@@ -18,6 +18,7 @@ uint8_t sOtaBuf[4096];
 bool sCheckedOnce = false;
 bool sLastCheckOk = false;
 uint32_t sLastCheckAt = 0;
+volatile bool sCheckRequested = false;
 uint8_t sBootAttempts = 0;
 // Two shots in the pristine-heap boot window, no more: each failed TLS
 // attempt costs ~15 s (timeout + gap), and holding the feed fetches behind
@@ -119,19 +120,22 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   // (two ~17 KB contiguous mbedtls buffers; the fragmented post-feed heap's
   // largest block is too small), which is also why the feed fetches wait
   // for otaBootGateReached(). The periodic recheck below is best-effort.
-  if (onlineForMs < OTA_FIRST_CHECK_AFTER_ONLINE_MS) return;
-  uint32_t now = millis();
-  if (sCheckedOnce) {
-    uint32_t interval =
-        sLastCheckOk ? OTA_CHECK_INTERVAL_MS : OTA_CHECK_RETRY_MS;
-    if ((now - sLastCheckAt) < interval) return;
-  } else if (sBootAttempts > 0 && (now - sLastCheckAt) < 5000) {
-    // Boot-window retry: the association-time TLS window is probabilistic
-    // on this network, so keep retrying across the first ~100 s of uptime
-    // while the heap is still pristine.
-    return;
+  // A portal-requested check bypasses the pacing (the user is watching),
+  // but still runs on the data task with the heap released.
+  bool requested = sCheckRequested;
+  sCheckRequested = false;
+  if (!requested) {
+    if (onlineForMs < OTA_FIRST_CHECK_AFTER_ONLINE_MS) return;
+    uint32_t now = millis();
+    if (sCheckedOnce) {
+      uint32_t interval =
+          sLastCheckOk ? OTA_CHECK_INTERVAL_MS : OTA_CHECK_RETRY_MS;
+      if ((now - sLastCheckAt) < interval) return;
+    } else if (sBootAttempts > 0 && (now - sLastCheckAt) < 5000) {
+      return;
+    }
   }
-  sLastCheckAt = now;
+  sLastCheckAt = millis();
 
   // Run alone: drop the statsapi keep-alive session and let the data-task
   // loop hold the feed fetches until this returns.
@@ -264,6 +268,11 @@ bool otaUpdateInProgress() {
   OtaStage stage = getOtaStage();
   return stage == OtaStage::DOWNLOADING || stage == OtaStage::REBOOTING;
 }
+
+void requestOtaCheckNow() { sCheckRequested = true; }
+bool otaCheckRequested() { return sCheckRequested; }
+bool otaEverChecked() { return sCheckedOnce; }
+bool otaLastCheckOk() { return sLastCheckOk; }
 
 bool otaBootGateReached(uint32_t onlineForMs) {
   // The TLS handshake needs a pristine heap: two ~17 KB contiguous mbedtls
