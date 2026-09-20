@@ -38,6 +38,9 @@ bool dnsRunning = false;
 bool apUp = false;
 bool otaStarted = false;
 String deviceHostname = NETWORK_HOSTNAME;
+// Per-device setup AP SSID (set once MAC is known) so several
+// unprovisioned boards can be powered at once without SSID collisions.
+String apSsid = NETWORK_AP_SSID;
 
 // Credentials in NVS (last known good) and the pair being tried from the portal.
 String savedSsid;
@@ -194,7 +197,7 @@ void enterProvisioning() {
   stateStartedAt = millis();
   WiFi.disconnect();
   if (!apUp) {
-    WiFi.softAP(NETWORK_AP_SSID, NETWORK_AP_PASSWORD);
+    WiFi.softAP(apSsid.c_str(), NETWORK_AP_PASSWORD);
     apUp = true;
     startPortalInfrastructure();
   }
@@ -385,7 +388,7 @@ void renderAccessPointInstructions(const String& portalAddress, bool stationConn
     display.print("1. Connect to:");
     display.setTextSize(2);
     display.setCursor(8, 51);
-    display.print(NETWORK_AP_SSID);
+    display.print(apSsid);
     display.setTextSize(1);
     display.setCursor(8, 78);
     display.print("Password:");
