@@ -51,6 +51,14 @@ uint32_t lastReconnectAt = 0;
 uint32_t lastDebugAt = 0;
 wl_status_t lastLoggedWiFiStatus = WL_NO_SHIELD;
 bool setupScreenVisible = false;
+// Portal priority mode: while someone is actively using the setup pages,
+// background work pauses so the web server gets the core and the radio to
+// itself (page loads over this device's marginal Wi-Fi stall otherwise).
+// Every request refreshes the window.
+uint32_t portalActiveUntil = 0;
+void markPortalActivity() {
+  portalActiveUntil = millis() + PORTAL_ACTIVITY_WINDOW_MS;
+}
 
 // Only delays the very first boot's CONNECTING->ONLINE transition (see runNetworkStateMachine),
 // so the Wi-Fi setup/connecting screen isn't just a flash; later reconnects skip this.
@@ -419,11 +427,14 @@ String readConfig() {
 }
 
 void redirectToPortal() {
+  markPortalActivity();
   server.sendHeader("Location", "/", true);
   server.send(302, "text/plain", "");
 }
 
 void servePortal() {
+  markPortalActivity();
+  server.sendHeader("Cache-Control", "max-age=300");
   String page = R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MLB Scoreboard Setup</title><style>
 body{margin:0;background:#061b46;color:#fff;font:16px system-ui,sans-serif}
@@ -463,11 +474,13 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
 }
 
 void serveStatus() {
+  markPortalActivity();
   const char* name = state == ONLINE ? "online" : (state == CONNECTING ? "connecting" : "provisioning");
   server.send(200, "application/json", String("{\"state\":\"") + name + "\"}");
 }
 
 void saveNetwork() {
+  markPortalActivity();
   pendingSsid = server.arg("ssid");
   pendingPassword = server.arg("password");
   if (server.hasArg("team1")) prefTeam1 = server.arg("team1").toInt();
@@ -534,6 +547,7 @@ else if(s.state==='provisioning'){document.getElementById('status').textContent=
 
 
 void saveConfig() {
+  markPortalActivity();
   if (server.arg("portal") != NETWORK_PORTAL_PASSWORD) {
     server.send(401, "text/plain", "Invalid portal password");
     return;
@@ -556,10 +570,12 @@ void saveConfig() {
 }
 
 void serveConfig() {
+  markPortalActivity();
   server.send(200, "application/json", readConfig());
 }
 
 void serveUpdatePage() {
+  markPortalActivity();
   server.send(200, "text/html", R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Firmware Update</title><style>
 body{margin:0;background:#061b46;color:#fff;font:16px system-ui,sans-serif}
@@ -576,6 +592,7 @@ button{margin-top:16px;width:100%;padding:12px;background:#f5c400;border:0;borde
 }
 
 void handleUpdateUpload() {
+  markPortalActivity();
   HTTPUpload& upload = server.upload();
   if (upload.status == UPLOAD_FILE_START) {
     Serial.printf("[UPDATE] Receiving firmware: %s\n", upload.filename.c_str());
@@ -598,6 +615,7 @@ void handleUpdateUpload() {
 }
 
 void handleUpdateResult() {
+  markPortalActivity();
   server.sendHeader("Connection", "close");
   server.send(200, "text/plain", Update.hasError() ? "Update FAILED" : "Update OK, rebooting...");
   delay(500);
@@ -664,6 +682,10 @@ bool isProvisioning() {
   return state == PROVISIONING;
 }
 
+bool portalEngaged() {
+  return millis() < portalActiveUntil;
+}
+
 const char* getSavedWifiSsid() {
   return savedSsid.c_str();
 }
@@ -690,6 +712,10 @@ void startNetworkServices() {
   }
   registerPortalRoutes();
   WiFi.mode(WIFI_AP_STA);
+  // Keep the modem awake from the very first connection (previously only
+  // reconnects did this): default power save makes the radio sleep between
+  // beacons, which stalls inbound portal page loads from phones.
+  WiFi.setSleep(false);
   String macAddress = WiFi.macAddress();
   macAddress.replace(":", "");
   if (macAddress.length() >= 5) {
@@ -767,7 +793,7 @@ void startNetworkTask() {
     "NetworkTask",
     8192,
     nullptr,
-    1,
+    2,  // above the MLB data task: the portal must preempt feed fetches
     nullptr,
     0
   );

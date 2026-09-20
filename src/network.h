@@ -12,6 +12,9 @@ bool isOnline();
 // the boot UI shows the "connect to the scoreboard" page instead of the
 // status page in that state.
 bool isProvisioning();
+// True while someone recently used the setup portal: background feed work
+// pauses so the web server gets the core and the radio to itself.
+bool portalEngaged();
 // Saved Wi-Fi SSID ("" when none) and the device's current IP ("" while
 // not online) — read by the boot status page.
 const char* getSavedWifiSsid();

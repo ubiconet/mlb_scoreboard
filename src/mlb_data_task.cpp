@@ -353,6 +353,16 @@ void mlbDataTaskLoop(void*) {
         vTaskDelay(pdMS_TO_TICKS(100));
         continue;
       }
+      // Portal priority mode: someone is actively using the setup pages —
+      // pause all feed activity (and drop the statsapi session) so the web
+      // server gets the core and the radio airtime to itself. Cached data
+      // keeps the display going; feeds resume when the portal goes idle.
+      if (portalEngaged()) {
+        closeMlbApiSession();
+        vTaskDelay(pdMS_TO_TICKS(200));
+        continue;
+      }
+
       // The first OTA check runs before any feed fetch: its TLS handshake
       // needs the pristine boot heap (see otaBootGateReached).
       if (!otaBootGateReached(onlineFor)) {

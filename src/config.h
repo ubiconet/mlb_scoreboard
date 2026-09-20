@@ -2,7 +2,7 @@
 
 // Serial
 static const uint32_t SERIAL_BAUD_RATE = 115200;
-static const char* FIRMWARE_VERSION = "v2.53";
+static const char* FIRMWARE_VERSION = "v2.56";
 
 // Compile-time debug log gate. Set to 0 in production builds to drop the
 // per-tick [DISPLAY]/[API CALL] printf noise (a Serial.printf at 115200 baud
@@ -70,6 +70,10 @@ static const uint32_t NETWORK_DEBUG_INTERVAL_MS = 10000;
 static const uint32_t NETWORK_SETUP_SCREEN_MS = 0;         // online screen no longer drawn; release scoreboard immediately
 static const uint32_t NETWORK_SCAN_REFRESH_MS = 30000;    // portal scan-list cache age
 static const uint32_t NETWORK_PROVISIONING_RETRY_MS = 60000; // retry saved Wi-Fi after this long in AP mode
+// While anyone is using the setup portal (any HTTP request refreshes this
+// window), feed fetching pauses entirely so the portal loads fast even on
+// this device's marginal Wi-Fi.
+static const uint32_t PORTAL_ACTIVITY_WINDOW_MS = 120000;
 // Formerly held the (now removed) Wi-Fi connecting screen up at boot; the
 // boot logo covers that role. Kept at zero so nothing delays going online.
 static const uint32_t NETWORK_FIRST_CONNECT_MIN_MS = 0;
