@@ -2,7 +2,7 @@
 
 // Serial
 static const uint32_t SERIAL_BAUD_RATE = 115200;
-static const char* FIRMWARE_VERSION = "v2.44";
+static const char* FIRMWARE_VERSION = "v2.49";
 
 // Compile-time debug log gate. Set to 0 in production builds to drop the
 // per-tick [DISPLAY]/[API CALL] printf noise (a Serial.printf at 115200 baud
@@ -86,15 +86,14 @@ static const uint32_t MLB_POSTGAME_GRACE_MS = 300000;    // Keep final followed 
 static const uint32_t MLB_AT_BAT_RESULT_DISPLAY_MS = 5000; // Full-screen result card duration
 static const uint32_t MLB_CAROUSEL_ROTATE_MS = 5000;      // Rotate live-game stat ticker every 5s
 static const uint32_t MLB_UPCOMING_GAMES_ROTATE_MS = 5000;  // Show each upcoming-game card for 5s
-// News ticker pacing. The band push over the bit-banged SPI bus is the
-// hard limit; the visible tear equals scroll speed x push time, so both
-// get reduced: 100 px/s (from 144) plus the 240-px text window in
-// drawNewsTickerFrame (from 320) cut the tear step from ~26 px to ~13 px —
-// about half a character cell, below the glyph width where tearing
-// becomes hard to notice. The offset is time-derived in rotateCarousel()
-// so loop jitter can't double-step frames.
-static const uint32_t MLB_NEWS_TICKER_FRAME_MS = 25;   // min ms between ticker frames
-static const int MLB_NEWS_TICKER_PX_PER_SEC = 100;     // scroll speed (time-based)
+// News ticker pacing — LED-marquee style. The bit-banged bus can't push
+// the window fast enough for clean continuous motion (any continuous
+// scroll tears by speed x push time, ~14 px at best), so the ticker
+// advances one whole character cell (24 px) per step and holds between
+// steps, like a physical LED sign: the display is perfectly static except
+// for a brief tick every MLB_NEWS_TICKER_STEP_MS. 200 ms/step averages
+// ~80 px/s. Smaller = faster, larger = slower.
+static const uint32_t MLB_NEWS_TICKER_STEP_MS = 200;   // ms per 24-px character step
 static const uint32_t MLB_NEWS_CACHE_TTL_MS = 30UL * 60UL * 1000UL; // Refresh ESPN news every 30 min
 static const uint32_t MLB_NEWS_RETRY_MS     = 60UL * 1000UL;       // Retry failed news fetch every 60s until first success. Keep this gentle: ESPN's edge starts rejecting TLS handshakes (fatal alerts) from clients that retry every few seconds.
 

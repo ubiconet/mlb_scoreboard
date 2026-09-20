@@ -47,9 +47,8 @@ size_t    newsStoryIndex = 0;
 enum class UpcomingSubPage : uint8_t { NEWS_STORY = 0, GAME_INFO = 1, COUNT = 2 };
 UpcomingSubPage upcomingSubPage = UpcomingSubPage::NEWS_STORY;
 
-int newsTickerX = 0;   // current scroll offset (derived from newsTickerStartedAt)
+int newsTickerX = 0;   // current marquee offset (derived from newsTickerStartedAt)
 uint32_t newsTickerStartedAt = 0;  // millis() when this story's scroll began
-uint32_t lastNewsTickerFrameAt = 0;
 
 struct UpcomingGameInfo {
   int awayTeamId;
@@ -905,11 +904,10 @@ void drawNewsTickerStatic() {
 // sized (320 + textWidth) x 80, but a bare 320x80 RGB565 sprite is 51.2 KB —
 // more heap than this device ever has free — so the allocation always failed
 // and the news slide flashed past in ~200 ms. Drawing only the visible
-// characters per frame costs no extra heap. The text is laid out on a
-// virtual strip of 320 blank pixels followed by the description; the 320-px
-// window offset is derived from elapsed wall time at
-// MLB_NEWS_TICKER_PX_PER_SEC (see rotateCarousel), so the text enters from
-// the right and exits left at an even pace.
+// characters per frame costs no extra heap. The text is laid out to the
+// right of the window and advances one character cell at a time (see
+// rotateCarousel's LED-marquee stepping), entering from the right and
+// exiting left.
 void drawNewsTickerFrame(int offset) {
   GFXcanvas16& canvas = getCanvas();
   uint32_t startedAt = micros();
@@ -953,16 +951,14 @@ void drawNewsTickerFrame(int offset) {
                           NEWS_TICKER_WINDOW_W, 1);
   }
 
-  // One timing line per story (not per frame) so the effective scroll pace
-  // is visible on Serial when tuning FRAME_MS / PX_PER_SEC.
+  // One timing line per story (not per step) so the per-step push cost is
+  // visible on Serial when tuning MLB_NEWS_TICKER_STEP_MS.
   static size_t sTimedStory = SIZE_MAX;
   if (sTimedStory != newsStoryIndex) {
     sTimedStory = newsStoryIndex;
-    DBG_PRINTF("[TICKER] window frame %lu us; target %d px/s (step ~%d px)\n",
+    DBG_PRINTF("[TICKER] step frame %lu us; %lu ms per %d-px cell\n",
                (unsigned long)(micros() - startedAt),
-               MLB_NEWS_TICKER_PX_PER_SEC,
-               (int)((MLB_NEWS_TICKER_PX_PER_SEC *
-                      (unsigned long)(micros() - startedAt)) / 1000000));
+               (unsigned long)MLB_NEWS_TICKER_STEP_MS, NEWS_TICKER_CHAR_W);
   }
 }
 
@@ -1321,7 +1317,6 @@ void renderWaiting(JsonObjectConst upcomingSchedule,
   upcomingSubPage = UpcomingSubPage::NEWS_STORY;
   newsTickerStartedAt = millis();
   newsTickerX = 0;
-  lastNewsTickerFrameAt = 0;
   currentStandings = standings;
   int listedTeamIds[3] = {};
 
@@ -1400,24 +1395,23 @@ void rotateCarousel() {
     }
 
     if (upcomingSubPage == UpcomingSubPage::NEWS_STORY && newsStoryCount > 0) {
-      uint32_t now = millis();
-      if (now - lastNewsTickerFrameAt < MLB_NEWS_TICKER_FRAME_MS) return;
-      lastNewsTickerFrameAt = now;
-      // Derive the offset from wall-clock time instead of accumulating a
-      // step per rendered frame: the render loop's pacing varies with the
-      // rest of the UI, and a fixed step turned that jitter into visible
-      // double-steps (tearing). Time-based positioning renders the correct
-      // position for whenever the frame actually lands.
-      newsTickerX = (int)(((uint64_t)(now - newsTickerStartedAt) *
-                           MLB_NEWS_TICKER_PX_PER_SEC) / 1000);
+      // LED-marquee stepping: the offset advances one whole character
+      // cell per MLB_NEWS_TICKER_STEP_MS, repainting only when the cell
+      // changes. Continuous scrolling can never be pushed cleanly over
+      // the bit-banged bus (speed x push time always shows as tearing);
+      // a stepped sign is perfectly static between ticks.
+      int offset = (int)((millis() - newsTickerStartedAt) /
+                         MLB_NEWS_TICKER_STEP_MS) * NEWS_TICKER_CHAR_W;
+      if (offset == newsTickerX) return;  // holding between steps
+      newsTickerX = offset;
 
       // Done when the trailing edge of the text has crossed the window's
       // LEFT edge (the push clips at the window, so pixels left of it are
       // never shown — no need to scroll the text all the way to x=0).
       if (newsTickerX > NEWS_TICKER_WINDOW_R - NEWS_TICKER_WINDOW_X +
-                            newsTickerTextPx() + 20) {
+                            newsTickerTextPx() + NEWS_TICKER_CHAR_W) {
         upcomingSubPage = UpcomingSubPage::GAME_INFO;
-        lastCarouselTime = now;
+        lastCarouselTime = millis();
         // Actually paint the game card here: without this, the GAME_INFO
         // dwell showed the frozen final ticker frame for its whole 5 s and
         // then moved on — the upcoming-game cards never appeared.
@@ -1441,7 +1435,6 @@ void rotateCarousel() {
       newsStoryIndex = (newsStoryIndex + 1) % newsStoryCount;
       newsTickerStartedAt = millis();
       newsTickerX = 0;
-      lastNewsTickerFrameAt = 0;
     }
     renderUpcomingCarouselPage();
     return;
@@ -1670,7 +1663,7 @@ bool handleOtaUpdateScreen() {
     canvas.setTextColor(COLOR_GOLD);
     canvas.setTextSize(2);
     drawCenteredText(canvas, pct, 160, 176);
-    // Row-by-row for the same stride reason as the ticker window above.
+    // Row-by-row for the same stride reason as the ticker window.
     for (int row = 0; row < 68; ++row) {
       display.drawRGBBitmap(20, 136 + row,
                             canvas.getBuffer() + (136 + row) * 320 + 20,
