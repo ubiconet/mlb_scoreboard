@@ -872,17 +872,21 @@ int drawWrappedText(Adafruit_GFX& target, const char* text, int x, int y, int ma
   return y + linesDrawn * lineHeight;
 }
 
-// The news ticker occupies canvas rows 160..239 (TFT bottom strip). Only the
-// text band inside it changes from frame to frame; the geometry follows the
-// text size (classic 5x7 Adafruit font scaled by NEWS_TICKER_TEXT_SIZE).
-// Repainting and pushing JUST this band per frame (~2.2x less software-SPI
-// traffic than the full 80-row strip) keeps the frame rate up; the scroll
-// offset is time-derived (rotateCarousel), so smaller steps land smoothly.
+// The news ticker occupies canvas rows 160..239 (TFT bottom strip). Only
+// the text band inside it changes from frame to frame; the geometry
+// follows the text size (classic 5x7 Adafruit font scaled by
+// NEWS_TICKER_TEXT_SIZE). The scrolling text lives inside a 240-px window
+// (margins show the static card background): the per-frame push — and
+// with it the visible tear, which equals speed x push time — shrinks 25%
+// compared to pushing the full 320-px width.
 static const int NEWS_TICKER_TEXT_SIZE = 4;                        // 24x32 px char cells
 static const int NEWS_TICKER_CHAR_W    = 6 * NEWS_TICKER_TEXT_SIZE;
 static const int NEWS_TICKER_TEXT_Y    = 160 + (80 - 8 * NEWS_TICKER_TEXT_SIZE) / 2;  // 184
-static const int NEWS_TICKER_BAND_TOP  = NEWS_TICKER_TEXT_Y - 2;   // 182
-static const int NEWS_TICKER_BAND_H    = 8 * NEWS_TICKER_TEXT_SIZE + 4;  // 36
+static const int NEWS_TICKER_BAND_TOP  = NEWS_TICKER_TEXT_Y - 1;   // 183
+static const int NEWS_TICKER_BAND_H    = 8 * NEWS_TICKER_TEXT_SIZE + 2;  // 34
+static const int NEWS_TICKER_WINDOW_X  = 40;                       // scrolling text window
+static const int NEWS_TICKER_WINDOW_W  = 240;
+static const int NEWS_TICKER_WINDOW_R  = NEWS_TICKER_WINDOW_X + NEWS_TICKER_WINDOW_W;
 
 // Painted once per news slide (not per frame): the card background for the
 // whole strip plus the red hairlines, which are static while the text
@@ -910,7 +914,11 @@ void drawNewsTickerFrame(int offset) {
   GFXcanvas16& canvas = getCanvas();
   uint32_t startedAt = micros();
 
-  canvas.fillRect(0, NEWS_TICKER_BAND_TOP, 320, NEWS_TICKER_BAND_H, COLOR_CARD);
+  // Repaint + push ONLY the 240-px window and the text rows; the static
+  // margins and hairlines (drawNewsTickerStatic) stay untouched. Fewer
+  // pushed pixels = shorter sweep = proportionally smaller tear step.
+  canvas.fillRect(NEWS_TICKER_WINDOW_X, NEWS_TICKER_BAND_TOP,
+                  NEWS_TICKER_WINDOW_W, NEWS_TICKER_BAND_H, COLOR_CARD);
 
   const NewsStory& story = newsStories[newsStoryIndex];
   const char* text = story.description[0] != '\0' ? story.description
@@ -919,26 +927,38 @@ void drawNewsTickerFrame(int offset) {
   canvas.setTextColor(COLOR_LED_RED);
   canvas.setTextSize(NEWS_TICKER_TEXT_SIZE);
   canvas.setTextWrap(false);
+  // Chars whose left edge is left of the window are skipped; the push
+  // clips partial chars at the window's right edge.
   int firstChar =
-      (offset > 320) ? (offset - 320 + NEWS_TICKER_CHAR_W - 1) / NEWS_TICKER_CHAR_W
-                     : 0;
-  canvas.setCursor(320 + firstChar * NEWS_TICKER_CHAR_W - offset,
+      (offset > NEWS_TICKER_WINDOW_R)
+          ? (offset - NEWS_TICKER_WINDOW_R + NEWS_TICKER_CHAR_W - 1) /
+                NEWS_TICKER_CHAR_W
+          : 0;
+  canvas.setCursor(NEWS_TICKER_WINDOW_R + firstChar * NEWS_TICKER_CHAR_W - offset,
                    NEWS_TICKER_TEXT_Y);
   for (const char* p = text + firstChar; *p != '\0'; ++p) {
-    if (canvas.getCursorX() >= 320) break;
+    if (canvas.getCursorX() >= NEWS_TICKER_WINDOW_R + NEWS_TICKER_CHAR_W) break;
     canvas.print(*p);
   }
   canvas.setTextWrap(true);
-  display.drawRGBBitmap(0, NEWS_TICKER_BAND_TOP,
-                        canvas.getBuffer() + NEWS_TICKER_BAND_TOP * 320,
-                        320, NEWS_TICKER_BAND_H);
+  // Push the window ROW BY ROW: drawRGBBitmap expects a packed w-wide
+  // bitmap, but this is a window into the 320-wide canvas — one call for
+  // the whole band would stride through the wrong memory and garble the
+  // text. Row-wise calls each read one contiguous 240-px run.
+  for (int row = 0; row < NEWS_TICKER_BAND_H; ++row) {
+    display.drawRGBBitmap(NEWS_TICKER_WINDOW_X, NEWS_TICKER_BAND_TOP + row,
+                          canvas.getBuffer() +
+                              (NEWS_TICKER_BAND_TOP + row) * 320 +
+                              NEWS_TICKER_WINDOW_X,
+                          NEWS_TICKER_WINDOW_W, 1);
+  }
 
   // One timing line per story (not per frame) so the effective scroll pace
   // is visible on Serial when tuning FRAME_MS / PX_PER_SEC.
   static size_t sTimedStory = SIZE_MAX;
   if (sTimedStory != newsStoryIndex) {
     sTimedStory = newsStoryIndex;
-    DBG_PRINTF("[TICKER] band frame %lu us; target %d px/s (step ~%d px)\n",
+    DBG_PRINTF("[TICKER] window frame %lu us; target %d px/s (step ~%d px)\n",
                (unsigned long)(micros() - startedAt),
                MLB_NEWS_TICKER_PX_PER_SEC,
                (int)((MLB_NEWS_TICKER_PX_PER_SEC *
@@ -1391,10 +1411,11 @@ void rotateCarousel() {
       newsTickerX = (int)(((uint64_t)(now - newsTickerStartedAt) *
                            MLB_NEWS_TICKER_PX_PER_SEC) / 1000);
 
-      // The window has passed the trailing edge of the text once it has
-      // advanced past the 320-px lead-in plus the text width (plus a small
-      // pad so the last characters clear the left edge).
-      if (newsTickerX > 320 + newsTickerTextPx() + 20) {
+      // Done when the trailing edge of the text has crossed the window's
+      // LEFT edge (the push clips at the window, so pixels left of it are
+      // never shown — no need to scroll the text all the way to x=0).
+      if (newsTickerX > NEWS_TICKER_WINDOW_R - NEWS_TICKER_WINDOW_X +
+                            newsTickerTextPx() + 20) {
         upcomingSubPage = UpcomingSubPage::GAME_INFO;
         lastCarouselTime = now;
         // Actually paint the game card here: without this, the GAME_INFO
@@ -1649,8 +1670,12 @@ bool handleOtaUpdateScreen() {
     canvas.setTextColor(COLOR_GOLD);
     canvas.setTextSize(2);
     drawCenteredText(canvas, pct, 160, 176);
-    display.drawRGBBitmap(20, 136, canvas.getBuffer() + 136 * 320 + 20,
-                          280, 68);
+    // Row-by-row for the same stride reason as the ticker window above.
+    for (int row = 0; row < 68; ++row) {
+      display.drawRGBBitmap(20, 136 + row,
+                            canvas.getBuffer() + (136 + row) * 320 + 20,
+                            280, 1);
+    }
   }
   return true;
 }
