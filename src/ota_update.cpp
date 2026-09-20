@@ -19,10 +19,11 @@ bool sCheckedOnce = false;
 bool sLastCheckOk = false;
 uint32_t sLastCheckAt = 0;
 uint8_t sBootAttempts = 0;
-// The association-time TLS window opens late or not at all on some boots
-// (the network path refuses the connection), so keep trying across a wider
-// span of the boot instead of giving up after three quick shots.
-const uint8_t OTA_BOOT_MAX_ATTEMPTS = 6;
+// Two shots in the pristine-heap boot window, no more: each failed TLS
+// attempt costs ~15 s (timeout + gap), and holding the feed fetches behind
+// six of them starved game data past the boot screens. The 10-minute
+// periodic retry picks the update check back up regardless.
+const uint8_t OTA_BOOT_MAX_ATTEMPTS = 2;
 
 // True when the manifest version is strictly NEWER than FIRMWARE_VERSION.
 // Both are "vMAJOR.MINOR"; anything unparsable is treated as not newer so

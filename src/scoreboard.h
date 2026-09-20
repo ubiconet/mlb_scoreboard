@@ -29,6 +29,11 @@ struct NewsStory {
 // One-time splash screen shown at boot, before network/game state is known.
 void renderBootSplash();
 
+// Boot status page: shown for BOOT_SETUP_PAGE_MS after the splash while
+// the network connects, the firmware-update check runs, and game data
+// loads behind it on core 0. Redraws only when connectivity changes.
+void renderBootStatusPage();
+
 // Renders the full MLB linescore UI on the ST7789 TFT and updates hardware LEDs / MAX7219 matrices
 void renderLinescore(const LinescoreSnapshot& linescore);
 

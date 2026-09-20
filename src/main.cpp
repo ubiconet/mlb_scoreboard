@@ -143,22 +143,35 @@ void setup() {
 }
 
 void loop() {
-  // Hold the boot logo for at least BOOT_SPLASH_HOLD_MS regardless of how
-  // quickly Wi-Fi connects or data arrives; the network tasks run on their
-  // own core and keep working behind the splash.
-  if (millis() < BOOT_SPLASH_HOLD_MS) {
+  // Boot sequence: (1) logo splash for BOOT_SPLASH_HOLD_MS while the
+  // network task connects Wi-Fi behind it; (2) an in-progress firmware
+  // update owns the screen whenever it runs; (3) the status/setup page
+  // for BOOT_SETUP_PAGE_MS — unless there is no usable saved Wi-Fi, in
+  // which case the AP provisioning page ("connect to the scoreboard")
+  // shows right after the splash instead. The scoreboard UI takes over
+  // after the setup window; network/update/game-data work runs on core 0
+  // throughout.
+  uint32_t bootNow = millis();
+  if (bootNow < BOOT_SPLASH_HOLD_MS) {
+    return;
+  }
+  if (handleOtaUpdateScreen()) {
+    return;
+  }
+  // Status page: 8 s minimum, then HOLDS until the first schedule data
+  // lands (or the BOOT_MAX_WAIT_FOR_DATA_MS cap) so the boot sequence
+  // never hands off to a "no upcoming games" screen while data is still
+  // loading. Without saved Wi-Fi the AP provisioning page shows instead.
+  if (!isProvisioning() &&
+      bootNow < BOOT_SPLASH_HOLD_MS + BOOT_MAX_WAIT_FOR_DATA_MS &&
+      (bootNow < BOOT_SPLASH_HOLD_MS + BOOT_SETUP_PAGE_MS ||
+       getUpcomingSchedulePublishedAt() == 0)) {
+    renderBootStatusPage();
     return;
   }
 
   handleNetworkDisplay();
   updateAtBatResultDisplay();
-
-  // Firmware-update UI owns the whole screen while an OTA download runs;
-  // everything else pauses until it finishes (reboot) or fails.
-  if (handleOtaUpdateScreen()) {
-    return;
-  }
-
   rotateCarousel();
 
   if (consumeScoreboardRelease()) {

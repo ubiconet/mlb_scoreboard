@@ -660,6 +660,18 @@ bool isOnline() {
   return state == ONLINE;
 }
 
+bool isProvisioning() {
+  return state == PROVISIONING;
+}
+
+const char* getSavedWifiSsid() {
+  return savedSsid.c_str();
+}
+
+String getDeviceIp() {
+  return (state == ONLINE) ? WiFi.localIP().toString() : String("");
+}
+
 bool isClockDisplayEnabled() {
   return clockDisplayEnabled;
 }
@@ -686,9 +698,12 @@ void startNetworkServices() {
   }
   WiFi.setHostname(deviceHostname.c_str());
   Serial.printf("[NET] Device hostname: %s\n", deviceHostname.c_str());
-  WiFi.softAP(NETWORK_AP_SSID, NETWORK_AP_PASSWORD);
-  apUp = true;
-  startPortalInfrastructure();
+  // The web server starts now and serves over whichever interface is up,
+  // but the setup AP only comes up in enterProvisioning() — i.e. when
+  // there's genuinely no saved network or connecting failed. Starting it
+  // eagerly at every boot broadcast MLB_SCOREBOARD for the whole connect
+  // window, letting phones that remember it auto-join and lose their
+  // route the moment the device went online (setup page then "hung").
   server.begin();
   setupScreenVisible = true;
 

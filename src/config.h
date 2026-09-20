@@ -2,7 +2,7 @@
 
 // Serial
 static const uint32_t SERIAL_BAUD_RATE = 115200;
-static const char* FIRMWARE_VERSION = "v2.49";
+static const char* FIRMWARE_VERSION = "v2.53";
 
 // Compile-time debug log gate. Set to 0 in production builds to drop the
 // per-tick [DISPLAY]/[API CALL] printf noise (a Serial.printf at 115200 baud
@@ -17,10 +17,17 @@ static const char* FIRMWARE_VERSION = "v2.49";
 #define DBG_PRINTF(fmt, ...) do {} while (0)
 #endif
 
-// Minimum time the boot splash (MLB SCOREBOARD logo) stays on screen while
-// Wi-Fi connects behind it. The blocking delay and the Wi-Fi setup screens
-// are gone: the logo IS the connecting screen now.
-static const uint32_t BOOT_SPLASH_HOLD_MS = 10000;
+// Boot sequence: the MLB SCOREBOARD logo splash holds the screen for at
+// least this long, then a status/setup page shows for BOOT_SETUP_PAGE_MS
+// (Wi-Fi + firmware check + game data all load behind both). With no
+// usable saved Wi-Fi the splash is followed by the AP provisioning page
+// ("connect to the scoreboard") instead of the status page.
+static const uint32_t BOOT_SPLASH_HOLD_MS = 12000;
+static const uint32_t BOOT_SETUP_PAGE_MS = 8000;
+// Past its minimum window the status page keeps showing until the first
+// schedule data lands — or this cap, so a dead network can't trap boot in
+// the setup page forever.
+static const uint32_t BOOT_MAX_WAIT_FOR_DATA_MS = 60000;
 
 // 2.0-inch ST7789V TFT (320x240, SPI)
 static const int TFT_SCLK_PIN = 13;
@@ -107,8 +114,8 @@ static const uint32_t MLB_NEWS_RETRY_MS     = 60UL * 1000UL;       // Retry fail
 static const char* OTA_MANIFEST_URL =
     "https://raw.githubusercontent.com/ubiconet/mlb_scoreboard/main/"
     "releases/manifest.json";
-static const uint32_t OTA_FIRST_CHECK_AFTER_ONLINE_MS = 15000; // TLS needs the pristine boot heap
-static const uint32_t OTA_BOOT_GATE_TIMEOUT_MS = 90000; // feeds start anyway if no check happened
+static const uint32_t OTA_FIRST_CHECK_AFTER_ONLINE_MS = 5000; // runs behind the boot screens; needs the pristine boot heap
+static const uint32_t OTA_BOOT_GATE_TIMEOUT_MS = 25000; // feeds must not starve behind failed TLS attempts
 static const uint32_t OTA_CHECK_INTERVAL_MS = 12UL * 60UL * 60UL * 1000UL; // recheck
 static const uint32_t OTA_CHECK_RETRY_MS = 10UL * 60UL * 1000UL;  // retry failed checks — keep after a flaky network
 static const uint32_t OTA_DOWNLOAD_STALL_MS = 30000;  // abort a download with no progress

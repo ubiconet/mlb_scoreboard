@@ -8,6 +8,14 @@ void handleNetworkDisplay();
 bool consumeScoreboardRelease();
 
 bool isOnline();
+// True while the device runs its own setup AP with no usable saved Wi-Fi —
+// the boot UI shows the "connect to the scoreboard" page instead of the
+// status page in that state.
+bool isProvisioning();
+// Saved Wi-Fi SSID ("" when none) and the device's current IP ("" while
+// not online) — read by the boot status page.
+const char* getSavedWifiSsid();
+String getDeviceIp();
 void getPreferredTeamIds(int outTeamIds[3]);
 bool isClockDisplayEnabled();
 
