@@ -1,120 +1,44 @@
 #pragma once
 
-// Serial
-static const uint32_t SERIAL_BAUD_RATE = 115200;
-static const char* FIRMWARE_VERSION = "v2.58";
+// ============================================================================
+// Composition root + device/repo identity
+// ============================================================================
+// This header composes the full build configuration from three layers:
+//
+//   1. THIS FILE           — identity of this particular repo/device install:
+//                            firmware version, timezone, self-update URLs.
+//   2. common/config.h     — framework defaults shared by every scoreboard
+//                            built on this template (debug gate, boot/network
+//                            timing, OTA pacing).
+//   3. sport_config.h      — the selected sport's profile (pins, branding,
+//                            feed cadences, layout constants). Resolved from
+//                            the src/sports/<sport>/ folder that each
+//                            PlatformIO env puts on the include path — see
+//                            the -I flag in platformio.ini.
+//
+// Every source file keeps including plain "config.h" and sees the union of
+// all three, exactly like the pre-template single config.h did.
 
-// Compile-time debug log gate. Set to 0 in production builds to drop the
-// per-tick [DISPLAY]/[API CALL] printf noise (a Serial.printf at 115200 baud
-// stalls the loop ~25 ms — measurable against the 5s poll cadence). Enable by
-// uncommenting or passing -DMLB_DEBUG=1 in build_flags during development.
-#ifndef MLB_DEBUG
-#define MLB_DEBUG 1   // temporarily enabled to diagnose "no upcoming games"
-#endif
-#if MLB_DEBUG
-#define DBG_PRINTF(fmt, ...) Serial.printf(fmt, ##__VA_ARGS__)
-#else
-#define DBG_PRINTF(fmt, ...) do {} while (0)
-#endif
+// ---- Firmware identity -----------------------------------------------------
+// tools/release_deploy.py reads FIRMWARE_VERSION from THIS file to name the
+// release binary, so the definition must stay here.
+static const char* FIRMWARE_VERSION = "v2.59";
 
-// Boot sequence: the MLB SCOREBOARD logo splash holds the screen for at
-// least this long, then a status/setup page shows for BOOT_SETUP_PAGE_MS
-// (Wi-Fi + firmware check + game data all load behind both). With no
-// usable saved Wi-Fi the splash is followed by the AP provisioning page
-// ("connect to the scoreboard") instead of the status page.
-static const uint32_t BOOT_SPLASH_HOLD_MS = 12000;
-static const uint32_t BOOT_SETUP_PAGE_MS = 8000;
-// Past its minimum window the status page keeps showing until the first
-// schedule data lands — or this cap, so a dead network can't trap boot in
-// the setup page forever.
-static const uint32_t BOOT_MAX_WAIT_FOR_DATA_MS = 60000;
-
-// 2.0-inch ST7789V TFT (320x240, SPI)
-static const int TFT_SCLK_PIN = 13;
-static const int TFT_MOSI_PIN = 12;
-static const int TFT_CS_PIN = 9;
-static const int TFT_DC_PIN = 10;
-static const int TFT_RESET_PIN = 11;
-static const int TFT_BACKLIGHT_PIN = -1;
-static const int TFT_NATIVE_WIDTH = 240;
-static const int TFT_NATIVE_HEIGHT = 320;
-
-// MAX7219 8x8 LED Matrix displays (2 cascaded modules: 0=Away, 1=Home)
-static const int MAX7219_DIN_PIN = 14;
-static const int MAX7219_CLK_PIN = 8;
-static const int MAX7219_CS_PIN = 16;
-
-// Discrete Count LEDs (GPIO pins)
-static const int BALL_3_PIN = 1;
-static const int BALL_2_PIN = 2;
-static const int BALL_1_PIN = 3;
-static const int STRIKE_2_PIN = 4;
-static const int STRIKE_1_PIN = 5;
-static const int OUT_2_PIN = 6;
-static const int OUT_1_PIN = 7;
-
-// Network fallback access point and portal login.
-static const char* NETWORK_AP_SSID = "MLB_SCOREBOARD";
-static const char* NETWORK_AP_PASSWORD = "score1234";
-static const char* NETWORK_PORTAL_PASSWORD = "score";
-static const char* NETWORK_HOSTNAME = "mlb-scoreboard";
-// Network (Arduino) OTA: used by `pio run -t upload --upload-port <ip>` during development.
-static const char* NETWORK_OTA_PASSWORD = "score1234";
-// Connectivity probe: any HTTP response from this anchor means the uplink works.
-static const char* NETWORK_PROBE_ANCHOR_URL = "http://connectivitycheck.gstatic.com/generate_204";
-static const uint32_t NETWORK_CONNECT_AND_PROBE_TIMEOUT_MS = 30000; // assoc + internet probe budget
-static const uint32_t NETWORK_PROBE_INTERVAL_MS = 5000; 
-static const uint32_t NETWORK_RECONNECT_GRACE_MS = 15000; // sustained drop before re-provisioning
-static const uint32_t NETWORK_RECONNECT_RETRY_MS = 5000;
-static const uint32_t NETWORK_DEBUG_INTERVAL_MS = 10000;
-static const uint32_t NETWORK_SETUP_SCREEN_MS = 0;         // online screen no longer drawn; release scoreboard immediately
-static const uint32_t NETWORK_SCAN_REFRESH_MS = 30000;    // portal scan-list cache age
-static const uint32_t NETWORK_PROVISIONING_RETRY_MS = 60000; // retry saved Wi-Fi after this long in AP mode
-// While anyone is using the setup portal (any HTTP request refreshes this
-// window), feed fetching pauses entirely so the portal loads fast even on
-// this device's marginal Wi-Fi.
-static const uint32_t PORTAL_ACTIVITY_WINDOW_MS = 120000;
-// Formerly held the (now removed) Wi-Fi connecting screen up at boot; the
-// boot logo covers that role. Kept at zero so nothing delays going online.
-static const uint32_t NETWORK_FIRST_CONNECT_MIN_MS = 0;
-
-// POSIX timezone used to convert MLB's UTC gameDate values to the local clock.
+// ---- Install location ------------------------------------------------------
+// POSIX timezone used to convert feed UTC gameDate values to the local clock.
 // Change this for the location where the scoreboard is installed.
 static const char* LOCAL_TIMEZONE = "EST5EDT,M3.2.0,M11.1.0";
 
-// MLB Live Polling
-static const uint32_t MLB_LIVE_POLL_INTERVAL_MS = 5000;  // 5 second live linescore tick
-static const uint32_t MLB_SCHEDULE_POLL_INTERVAL_MS = 60000; // Detect followed-game start/end within 1 min
-static const uint32_t MLB_SCHEDULE_RETRY_MS = 15000;   // Base retry while the last schedule fetch failed (flaky Wi-Fi)
-static const uint32_t MLB_RETRY_BACKOFF_MAX_MS = 120000; // Exponential backoff cap for failed fetch retries.
-// After the first couple of connections following boot, new TLS connections
-// start failing instantly (start_ssl_client: -1) with the radio still
-// associated and heap healthy — consistent with the AP's flood protection
-// and/or leaked lwIP PCBs from failed handshakes. Backing off exponentially
-// (per ADR-0002) instead of retrying every 15 s lets those windows expire.
-static const uint32_t MLB_NTP_READY_RETRY_MS = 5000;     // short retry while awaiting first time sync
-static const uint32_t MLB_POSTGAME_GRACE_MS = 300000;    // Keep final followed game visible for 5 min
-static const uint32_t MLB_AT_BAT_RESULT_DISPLAY_MS = 5000; // Full-screen result card duration
-static const uint32_t MLB_CAROUSEL_ROTATE_MS = 5000;      // Rotate live-game stat ticker every 5s
-static const uint32_t MLB_UPCOMING_GAMES_ROTATE_MS = 5000;  // Show each upcoming-game card for 5s
-// News ticker pacing — LED-marquee style. The bit-banged bus can't push
-// the window fast enough for clean continuous motion (any continuous
-// scroll tears by speed x push time, ~14 px at best), so the ticker
-// advances one whole character cell (24 px) per step and holds between
-// steps, like a physical LED sign: the display is perfectly static except
-// for a brief tick every MLB_NEWS_TICKER_STEP_MS. 200 ms/step averages
-// ~80 px/s. Smaller = faster, larger = slower.
-static const uint32_t MLB_NEWS_TICKER_STEP_MS = 200;   // ms per 24-px character step
-static const uint32_t MLB_NEWS_CACHE_TTL_MS = 30UL * 60UL * 1000UL; // Refresh ESPN news every 30 min
-static const uint32_t MLB_NEWS_RETRY_MS     = 60UL * 1000UL;       // Retry failed news fetch every 60s until first success. Keep this gentle: ESPN's edge starts rejecting TLS handshakes (fatal alerts) from clients that retry every few seconds.
-
-// Firmware self-update. `pio run -t deploy` writes the binary + manifest to
-// releases/ in the GitHub repo; the device polls the manifest after boot
-// and flashes itself when the version differs from FIRMWARE_VERSION.
+// ---- Firmware self-update endpoints ----------------------------------------
+// `pio run -t deploy` writes the binary + manifest to releases/ in this
+// GitHub repo; the device polls the manifest after boot and flashes itself
+// when the version is strictly newer than FIRMWARE_VERSION.
 // raw.githubusercontent.com only serves HTTPS — the one TLS connection the
 // firmware still makes (feeds themselves run over plain HTTP; see
-// mlb_client.cpp). It runs alone on core 0 with the statsapi session
+// sports/mlb/mlb_client.cpp). It runs alone on core 0 with the feed session
 // closed, so the ~45 KB TLS context fits.
+// TEMPLATE CHECKLIST: point these at the new repo when forking for a new
+// sport (and update RAW_BASE + LATEST_FILE in tools/release_deploy.py).
 static const char* OTA_MANIFEST_URL =
     "https://raw.githubusercontent.com/ubiconet/mlb_scoreboard/main/"
     "releases/manifest.json";
@@ -124,9 +48,6 @@ static const char* OTA_MANIFEST_URL =
 static const char* OTA_LATEST_BIN_URL =
     "https://raw.githubusercontent.com/ubiconet/mlb_scoreboard/main/"
     "releases/mlb_scoreboard_latest.bin";
-static const uint32_t OTA_FIRST_CHECK_AFTER_ONLINE_MS = 5000; // runs behind the boot screens; needs the pristine boot heap
-static const uint32_t OTA_BOOT_GATE_TIMEOUT_MS = 25000; // feeds must not starve behind failed TLS attempts
-static const uint32_t OTA_CHECK_INTERVAL_MS = 12UL * 60UL * 60UL * 1000UL; // recheck
-static const uint32_t OTA_CHECK_RETRY_MS = 10UL * 60UL * 1000UL;  // retry failed checks — keep after a flaky network
-static const uint32_t OTA_DOWNLOAD_STALL_MS = 30000;  // abort a download with no progress
 
+#include "common/config.h"
+#include "sport_config.h"

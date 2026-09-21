@@ -5,9 +5,9 @@
 #include <WiFiClientSecure.h>
 
 #include "config.h"
-#include "mlb_client.h"
+#include "common/comms/http_fetcher.h"
+#include "common/ui/ota_screen.h"
 #include "ota_update.h"
-#include "scoreboard.h"
 
 namespace {
 
@@ -137,9 +137,9 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   }
   sLastCheckAt = millis();
 
-  // Run alone: drop the statsapi keep-alive session and let the data-task
+  // Run alone: drop the feed keep-alive session and let the data-task
   // loop hold the feed fetches until this returns.
-  closeMlbApiSession();
+  http_fetch::closeSession();
 
   // Claim the update context BEFORE any TLS connection: it needs a 4 KB
   // contiguous staging buffer that the fragmented in-session heap can no

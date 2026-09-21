@@ -1,7 +1,7 @@
 from PIL import Image
 
-src = r"c:\projects\MLBScoreboard\src\mlbscoreboard.png"
-out = r"c:\projects\MLBScoreboard\src\boot_logo.h"
+src = r"c:\projects\MLBScoreboard\src\sports\mlb\assets\mlbscoreboard.png"
+out = r"c:\projects\MLBScoreboard\src\sports\mlb\boot_logo.h"
 
 im = Image.open(src).convert("RGBA")
 w, h = im.size

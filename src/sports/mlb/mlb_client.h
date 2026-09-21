@@ -27,14 +27,6 @@ bool fetchMlbStandings(JsonDocument& doc, int season = 0);
 // Fetch the latest MLB news headlines from ESPN (used for the upcoming-games news slides).
 bool fetchEspnMlbNews(JsonDocument& doc, int limit = 10);
 
-// Drop the shared statsapi keep-alive session. The OTA updater calls this
-// before its own TLS connection so the two never overlap on the heap.
-void closeMlbApiSession();
-
-// Return the retained response-body buffer to the heap (the OTA updater
-// does this before mid-session TLS checks to maximize contiguous space).
-void releaseMlbBuffers();
-
 // Select highest priority gamePk from daily schedule based on preferred team IDs
 int selectGamePkForTeams(JsonObjectConst scheduleRoot, const int preferredTeamIds[3]);
 
