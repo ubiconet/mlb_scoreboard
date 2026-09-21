@@ -45,3 +45,6 @@ String getDeviceIp();
 void getPreferredTeamIds(int outTeamIds[3]);
 // User preference: show the idle clock on the score matrices (NVS "show_clock").
 bool isClockDisplayEnabled();
+// Effective display timezone as a POSIX TZ string, selected in the setup
+// portal (NVS "tz"); used for game times, countdowns, and the idle clock.
+const char* getTzString();

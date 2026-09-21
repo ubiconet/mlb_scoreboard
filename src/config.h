@@ -22,12 +22,17 @@
 // ---- Firmware identity -----------------------------------------------------
 // tools/release_deploy.py reads FIRMWARE_VERSION from THIS file to name the
 // release binary, so the definition must stay here.
-static const char* FIRMWARE_VERSION = "v2.59";
+static const char* FIRMWARE_VERSION = "v2.60";
 
-// ---- Install location ------------------------------------------------------
-// POSIX timezone used to convert feed UTC gameDate values to the local clock.
-// Change this for the location where the scoreboard is installed.
-static const char* LOCAL_TIMEZONE = "EST5EDT,M3.2.0,M11.1.0";
+// ---- Install location (factory default) -------------------------------------
+// POSIX TZ string used ONLY until the user picks a timezone in the setup
+// portal (the selection is persisted in NVS key "tz" and returned by
+// network_service's getTzString()). It drives every displayed time: the
+// idle clock on the score matrices, upcoming-game times/countdowns, and the
+// schedule-day window the feed fetch uses. Change this to pre-provision a
+// board's first-boot timezone; afterwards the portal owns it.
+// TEMPLATE CHECKLIST: set to the new install's zone when forking.
+static const char* FACTORY_DEFAULT_TIMEZONE = "EST5EDT,M3.2.0,M11.1.0";
 
 // ---- Firmware self-update endpoints ----------------------------------------
 // `pio run -t deploy` writes the binary + manifest to releases/ in this

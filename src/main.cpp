@@ -76,13 +76,15 @@ void loop() {
 
   handleNetworkDisplay();
 
-  // One-shot NTP sync once the network is up. Timezone (install location)
-  // lives in src/config.h.
+  // One-shot NTP sync once the network is up. The display timezone is a
+  // portal setting (NVS "tz"); the factory default in src/config.h only
+  // covers the very first boot, and a mid-session portal change applies
+  // itself via setenv/tzset in the network service.
   static bool timeSyncRequested = false;
   if (!timeSyncRequested && isOnline()) {
-    configTzTime(LOCAL_TIMEZONE, "pool.ntp.org", "time.nist.gov");
+    configTzTime(getTzString(), "pool.ntp.org", "time.nist.gov");
     timeSyncRequested = true;
-    DBG_PRINTF("[TIME] NTP sync requested; timezone=%s\n", LOCAL_TIMEZONE);
+    DBG_PRINTF("[TIME] NTP sync requested; timezone=%s\n", getTzString());
   }
 
   SportTickContext ctx = {millis(), isOnline(), isProvisioning()};
