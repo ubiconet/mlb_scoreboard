@@ -4,16 +4,19 @@
 #include <WiFi.h>
 
 #include "config.h"
+#include "common/comms/http_fetcher.h"
+#include "common/data/time_util.h"
+#include "common/comms/network_service.h"
+#include "common/comms/ota_update.h"
 #include "mlb_client.h"
 #include "mlb_snapshot.h"
-#include "network.h"
-#include "ota_update.h"
-#include "scoreboard.h"
+#include "mlb_state.h"
+#include "mlb_renderer.h"
 
 namespace {
 
 // The publisher functions live at global scope in scoreboard.cpp (namespace
-// mlb_data::). They're declared in scoreboard.h's published snapshot header
+// mlb_data::). They're declared in mlb_state.h
 // via the take* helpers, and we just call them by qualified name here.
 
 // JSON workspace on core 0. Each API routine clears it before beginning a
@@ -22,7 +25,7 @@ JsonDocument mlbDoc;
 
 // News cache: only refresh every MLB_NEWS_CACHE_TTL_MS so the scoreboard
 // doesn't hammer ESPN's news endpoint on every waiting-mode cycle. Stories are
-// published into the renderer-owned newsStories[] slots declared in scoreboard.h.
+// published into the renderer-owned newsStories[] slots declared in mlb_renderer.h.
 uint32_t gLastNewsFetchAt    = 0;
 uint32_t gLastNewsAttemptAt  = 0;  // most recent attempt (success or fail) for failed-retry throttle
 uint32_t gLastNewsAppliedAt  = 0;
@@ -176,24 +179,6 @@ bool fetchLatestPlay(int gamePk, PlaySnapshot& out) {
   return out.valid;
 }
 
-// Parse the firmware's compile date string ("Mmm DD YYYY" e.g. "Sep 17 2026")
-// into a struct tm we can format. Used as the schedule-range start when NTP
-// hasn't synced yet so the carousel still has games on a fresh boot.
-bool parseCompileDate(const char* compileDate, tm& out) {
-  static const char* months = "JanFebMarAprMayJunJulAugSepOctNovDec";
-  int month = 0, day = 0, year = 0;
-  char monStr[4] = {};
-  if (sscanf(compileDate, "%3s %d %d", monStr, &day, &year) != 3) return false;
-  const char* m = strstr(months, monStr);
-  if (m == nullptr) return false;
-  month = (m - months) / 3 + 1;
-  memset(&out, 0, sizeof(out));
-  out.tm_year = year - 1900;
-  out.tm_mon  = month - 1;
-  out.tm_mday = day;
-  return true;
-}
-
 bool fetchScheduleSnapshot(ScheduleSnapshot& out) {
   // Bump the attempt counter immediately so the renderer can see the data
   // task is alive even when every fetch fails.
@@ -206,7 +191,7 @@ bool fetchScheduleSnapshot(ScheduleSnapshot& out) {
   char startDate[11] = {};
   char endDate[11]   = {};
   time_t nowEpoch = time(nullptr);
-  bool ntpReady = (nowEpoch >= 1704067200);
+  bool ntpReady = timeIsSynced();
 
   const int SCHEDULE_LOOKAHEAD_DAYS = 3;
 
@@ -354,7 +339,7 @@ void mlbDataTaskLoop(void*) {
         // offer (see the note at the top of ota_update.cpp).
         mlbDoc.clear();
         mlbDoc.shrinkToFit();
-        releaseMlbBuffers();
+        http_fetch::releaseBodyBuffer();
       }
       serviceOtaUpdates(onlineFor);
       if (otaUpdateInProgress()) {
@@ -366,7 +351,7 @@ void mlbDataTaskLoop(void*) {
       // server gets the core and the radio airtime to itself. Cached data
       // keeps the display going; feeds resume when the portal goes idle.
       if (portalEngaged()) {
-        closeMlbApiSession();
+        http_fetch::closeSession();
         vTaskDelay(pdMS_TO_TICKS(200));
         continue;
       }

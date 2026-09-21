@@ -1,140 +1,20 @@
 #include <Arduino.h>
 #include <HTTPClient.h>
-#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
+
 #include "config.h"
+#include "common/comms/http_fetcher.h"
 #include "mlb_client.h"
-#include "scoreboard.h"
+#include "mlb_state.h"
 
+// Feed endpoints + JSON filters for the MLB build. Transport (shared
+// keep-alive session, buffered body reader, filtered parse) lives in
+// common/comms/http_fetcher; the plain-HTTP rationale is documented there.
 namespace {
-// All endpoints are fetched over plain HTTP on purpose. The payloads are
-// public sports data (scores, headlines), the previous TLS usage was already
-// validation-free (setInsecure), and a single TLS session pinned ~45 KB of
-// heap — more than the device has to spare alongside the JSON documents —
-// which is what originally killed the schedule/news parses. Plain HTTP also
-// avoids the handshake allocations (RSA/BIGNUM) that failed on the
-// fragmented heap. Both hosts serve identical bodies over http://.
-//
-// Shared statsapi session: one WiFiClient + one HTTPClient reused across the
-// fetches of a single data-task tick via HTTP/1.1 keep-alive, and kept open
-// between ticks (the install's network path refuses new TCP flows from this
-// device after a burst of them). fetchEspnMlbNews drops it before its own
-// connection so the two never overlap.
-WiFiClient* sApiClient = nullptr;
-HTTPClient sApiHttp;
-bool sApiConnected = false;
 
-void resetMlbApiSession() {
-  sApiHttp.end();
-  if (sApiClient != nullptr) sApiClient->stop();
-  sApiConnected = false;
-}
-
-// Performs one GET on the shared session. Retries once on a fresh
-// connection (covers a keep-alive socket the server silently dropped).
-int statsApiGet(const String& url, uint32_t timeoutMs) {
-  if (sApiClient == nullptr) {
-    sApiClient = new WiFiClient();
-  }
-  for (int attempt = 0; attempt < 2; attempt++) {
-    sApiHttp.setReuse(true);
-    sApiHttp.setTimeout(timeoutMs);
-    if (!sApiHttp.begin(*sApiClient, url)) return -1;
-    int code = sApiHttp.GET();
-    if (code >= 0 || attempt == 1) {
-      sApiConnected = (code > 0);
-      return code;
-    }
-    // code < 0: stale keep-alive or transient — rebuild the session once.
-    resetMlbApiSession();
-  }
-  return -1;
-}
-
-// Reusable response-body buffer. An open TLS session pins ~45 KB of heap
-// (mbedTLS in/out record buffers), and the device only has ~50 KB free once
-// Wi-Fi + the display canvas are up, so parsing a large JSON straight off
-// the live stream overflowed (IncompleteInput / esp-sha allocation
-// failures). Instead the body is read into this buffer first; the payloads
-// are kept small (teamId-filtered schedule, linescore) so the subsequent
-// parse fits alongside the open session. Capacity is kept between fetches
-// so the same heap block is reused instead of churned.
-String gResponseBody;
-
-// Presents the buffered body to ArduinoJson as a Stream so parsed strings
-// are COPIED into the JsonDocument's own pool (in-memory inputs would be
-// zero-copy linked into gResponseBody, which the next fetch overwrites).
-class MemoryReadStream : public Stream {
- public:
-  MemoryReadStream(const char* data, size_t len)
-      : data_(data), len_(len), pos_(0) {}
-  int available() override { return (int)(len_ - pos_); }
-  int read() override { return pos_ < len_ ? (unsigned char)data_[pos_++] : -1; }
-  int peek() override { return pos_ < len_ ? (unsigned char)data_[pos_] : -1; }
-  size_t write(uint8_t) override { return 0; }
- private:
-  const char* data_;
-  size_t len_;
-  size_t pos_;
-};
-
-// Reads the response body into gResponseBody with an explicit deadline.
-// HTTPClient::getString() uses an available()-polling loop that bails out
-// with a silent empty/partial String as soon as connected() blips false —
-// which happens routinely on this install's lossy Wi-Fi while body packets
-// are still in flight. This reader waits out the gaps instead, and reads
-// EXACTLY Content-Length bytes so the keep-alive connection stays clean for
-// the next request on the shared session.
-static bool readResponseBody(HTTPClient& http, uint32_t timeoutMs) {
-  WiFiClient* stream = http.getStreamPtr();
-  if (stream == nullptr) return false;
-  int remaining = http.getSize();  // Content-Length, or -1 when absent
-  uint32_t deadline = millis() + timeoutMs;
-  uint8_t buf[512];
-  gResponseBody = "";
-  while ((int)gResponseBody.length() < 0x10000 && millis() < deadline) {
-    size_t avail = stream->available();
-    if (avail == 0) {
-      if (remaining == 0) break;  // known size fully read
-      if (remaining < 0 && !stream->connected()) break;  // close-delimited end
-      delay(2);
-      continue;
-    }
-    size_t toRead = sizeof(buf);
-    if (toRead > avail) toRead = avail;
-    if (remaining > 0 && toRead > (size_t)remaining) toRead = (size_t)remaining;
-    size_t got = stream->readBytes(buf, toRead);
-    if (got == 0) continue;
-    gResponseBody.concat((const char*)buf, (unsigned int)got);
-    if (remaining > 0) remaining -= (int)got;
-    if (remaining == 0) break;
-  }
-  return (remaining == 0) ||
-         (remaining < 0 && gResponseBody.length() > 0);
-}
-
-// Buffers the response of an already-successful GET and parses it. Call only
-// when http.GET() returned HTTP_CODE_OK. Pass a filter to restrict what is
-// kept, or nullptr to parse the whole body. The connection is left open on
-// success so the shared keep-alive session can serve the next request;
-// callers end the session via resetMlbApiSession() on any failure path.
-DeserializationError parseBufferedResponse(HTTPClient& http, JsonDocument& doc,
-                                           JsonDocument* filter) {
-  int contentLength = http.getSize();
-  bool readOk = readResponseBody(http, 8000);
-  DBG_PRINTF("[MLB] body %u bytes (content-length %d%s)\n",
-             (unsigned)gResponseBody.length(), contentLength,
-             readOk ? "" : ", read incomplete");
-  if (!readOk) {
-    return DeserializationError(DeserializationError::IncompleteInput);
-  }
-  MemoryReadStream stream(gResponseBody.c_str(), gResponseBody.length());
-  if (filter != nullptr) {
-    return deserializeJson(doc, stream, DeserializationOption::Filter(*filter));
-  }
-  return deserializeJson(doc, stream);
-}
-
+// ArduinoJson filter mask for the schedule endpoint's hydrate=linescore
+// payload: keeps the per-game team ids/names/scores plus the inning state
+// the other-live-games ticker needs, dropping everything else.
 void buildScheduleFilter(JsonDocument& filter) {
   filter["dates"][0]["date"] = true;
   filter["dates"][0]["games"][0]["gamePk"] = true;
@@ -150,26 +30,6 @@ void buildScheduleFilter(JsonDocument& filter) {
   filter["dates"][0]["games"][0]["linescore"]["currentInningOrdinal"] = true;
 }
 } // namespace
-
-// Uniform debug line for every outbound API call: endpoint name + HTTP response code.
-// Gated by MLB_DEBUG so the live game loop doesn't stall ~25 ms per printf on
-// every linescore poll. maxAlloc is the largest contiguous block the heap can
-// still satisfy — freeHeap alone hides fragmentation, and the TLS handshake
-// allocations fail against maxAlloc, not freeHeap.
-void logApiCall(const char* endpointName, int httpCode) {
-  DBG_PRINTF("[API CALL] %s -> HTTP %d | freeHeap=%u maxAlloc=%u\n",
-             endpointName, httpCode, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-}
-
-// Drops the shared statsapi keep-alive session (used by the OTA updater,
-// which needs the heap to itself for its TLS download connection).
-void closeMlbApiSession() {
-  resetMlbApiSession();
-}
-
-void releaseMlbBuffers() {
-  gResponseBody = String();
-}
 
 bool fetchMlbSchedule(const char* dateStr, JsonDocument& doc) {
   // A null/empty date asks the server for today's slate (US game-day), so the
@@ -190,24 +50,24 @@ bool fetchMlbSchedule(const char* dateStr, JsonDocument& doc) {
   setScheduleLastFetchAt(millis());
 
   doc.clear();
-  int httpCode = statsApiGet(url, 10000);
-  logApiCall("schedule", httpCode);
+  int httpCode = http_fetch::get(url, 10000);
+  http_fetch::logCall("schedule", httpCode);
   setScheduleLastHttpCode(httpCode);
 
   if (httpCode == HTTP_CODE_OK) {
     JsonDocument filter;
     buildScheduleFilter(filter);
-    DeserializationError error = parseBufferedResponse(sApiHttp, doc, &filter);
+    DeserializationError error = http_fetch::parseBody(doc, &filter);
     if (!error) {
       return true;
     } else {
       DBG_PRINTF("[MLB] Schedule JSON parse error: %s\n", error.c_str());
-      resetMlbApiSession();
+      http_fetch::closeSession();
       return false;
     }
   }
   DBG_PRINTF("[MLB] Schedule HTTP error: %d\n", httpCode);
-  resetMlbApiSession();
+  http_fetch::closeSession();
   return false;
 }
 
@@ -240,23 +100,23 @@ bool fetchMlbScheduleRange(const char* startDate, const char* endDate,
   setScheduleLastFetchAt(millis());
 
   doc.clear();
-  int httpCode = statsApiGet(url, 10000);
-  logApiCall("schedule_range", httpCode);
+  int httpCode = http_fetch::get(url, 10000);
+  http_fetch::logCall("schedule_range", httpCode);
   setScheduleLastHttpCode(httpCode);
 
   if (httpCode == HTTP_CODE_OK) {
     JsonDocument filter;
     buildScheduleFilter(filter);
-    DeserializationError error = parseBufferedResponse(sApiHttp, doc, &filter);
+    DeserializationError error = http_fetch::parseBody(doc, &filter);
     if (!error) {
       return true;
     }
     DBG_PRINTF("[MLB] Schedule range JSON parse error: %s\n", error.c_str());
-    resetMlbApiSession();
+    http_fetch::closeSession();
     return false;
   }
   DBG_PRINTF("[MLB] Schedule range HTTP error: %d\n", httpCode);
-  resetMlbApiSession();
+  http_fetch::closeSession();
   return false;
 }
 
@@ -265,28 +125,28 @@ bool fetchMlbLinescore(int gamePk, JsonDocument& doc) {
   url += String(gamePk);
   url += "/linescore";
 
-  // statsApiGet() already retries once on a fresh connection; two rounds
+  // http_fetch::get() already retries once on a fresh connection; two rounds
   // total is enough and keeps the per-poll latency bounded.
   for (int attempt = 1; attempt <= 2; attempt++) {
-    int httpCode = statsApiGet(url, 4000);
-    logApiCall("linescore", httpCode);
+    int httpCode = http_fetch::get(url, 4000);
+    http_fetch::logCall("linescore", httpCode);
 
     if (httpCode == HTTP_CODE_OK) {
       doc.clear();
       // Linescore bodies are tiny (~1.5 KB): read them via the exact-length
       // body reader so the keep-alive connection stays clean, then parse
       // the whole thing (no filter).
-      DeserializationError error = parseBufferedResponse(sApiHttp, doc, nullptr);
+      DeserializationError error = http_fetch::parseBody(doc, nullptr);
       if (!error) {
         return true;
       }
       DBG_PRINTF("[MLB] Linescore JSON parse error (attempt %d/2): %s\n",
                     attempt, error.c_str());
-      resetMlbApiSession();
+      http_fetch::closeSession();
     } else {
       DBG_PRINTF("[MLB] Linescore HTTP error (attempt %d/2): %d\n",
                  attempt, httpCode);
-      resetMlbApiSession();
+      http_fetch::closeSession();
     }
   }
 
@@ -300,8 +160,8 @@ bool fetchMlbLatestPlay(int gamePk, JsonDocument& doc) {
   url += "/playByPlay?fields=allPlays,about,atBatIndex,isComplete,"
          "result,event,description,matchup,batter,fullName";
 
-  int httpCode = statsApiGet(url, 5000);
-  logApiCall("play_by_play", httpCode);
+  int httpCode = http_fetch::get(url, 5000);
+  http_fetch::logCall("play_by_play", httpCode);
 
   if (httpCode == HTTP_CODE_OK) {
     doc.clear();
@@ -313,16 +173,16 @@ bool fetchMlbLatestPlay(int gamePk, JsonDocument& doc) {
     filter["allPlays"][0]["matchup"]["batter"]["fullName"] = true;
 
     DeserializationError error =
-        parseBufferedResponse(sApiHttp, doc, &filter);
+        http_fetch::parseBody(doc, &filter);
     if (!error) {
       return true;
     }
     DBG_PRINTF("[MLB] Play-by-play JSON parse error: %s\n", error.c_str());
-    resetMlbApiSession();
+    http_fetch::closeSession();
     return false;
   }
   DBG_PRINTF("[MLB] Play-by-play HTTP error: %d\n", httpCode);
-  resetMlbApiSession();
+  http_fetch::closeSession();
   return false;
 }
 
@@ -341,7 +201,7 @@ bool fetchMlbStandings(JsonDocument& doc, int season) {
   http.begin(client, url);
   http.setTimeout(12000);
   int httpCode = http.GET();
-  logApiCall("standings", httpCode);
+  http_fetch::logCall("standings", httpCode);
 
   if (httpCode == HTTP_CODE_OK) {
     // The API's "fields" filter can't tell our outer "records" array apart from the
@@ -382,10 +242,10 @@ bool fetchEspnMlbNews(JsonDocument& doc, int limit) {
 
   doc.clear();
   doc.shrinkToFit();
-  gResponseBody = String();
+  http_fetch::releaseBodyBuffer();
   // Drop the statsapi keep-alive session so the two connections never
   // overlap; the next statsapi fetch reopens its session transparently.
-  resetMlbApiSession();
+  http_fetch::closeSession();
 
   int httpCode = -1;
   for (int attempt = 0; attempt < 2 && httpCode < 0; attempt++) {
@@ -407,7 +267,7 @@ bool fetchEspnMlbNews(JsonDocument& doc, int limit) {
       DeserializationError error =
           deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
       http.end();
-      logApiCall("espn_mlb_news", httpCode);
+      http_fetch::logCall("espn_mlb_news", httpCode);
       if (!error) {
         size_t articleCount = doc["articles"].as<JsonArrayConst>().size();
         DBG_PRINTF("[ESPN] News parsed OK: %u articles\n",
@@ -420,7 +280,7 @@ bool fetchEspnMlbNews(JsonDocument& doc, int limit) {
     // Non-OK code: log and (if negative = transport failure) retry once on
     // a completely fresh client — fragmentation and router moods are both
     // transient.
-    logApiCall("espn_mlb_news", httpCode);
+    http_fetch::logCall("espn_mlb_news", httpCode);
     DBG_PRINTF("[ESPN] News HTTP error (attempt %d/2): %d\n", attempt + 1, httpCode);
     http.end();
   }

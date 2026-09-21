@@ -1,10 +1,16 @@
 #include <Arduino.h>
 #include <string.h>
 #include <time.h>
-#include "config.h"
-#include "hardware_drivers.h"
+
+#include "common/data/time_util.h"
+#include "led_matrix.h"
 
 namespace {
+// Pins, captured from initLedMatrix() — the driver never reads config itself.
+int DIN_PIN = -1;
+int CLK_PIN = -1;
+int CS_PIN = -1;
+
 // MAX7219 Register Addresses
 const uint8_t MAX7219_REG_NOOP = 0x00;
 const uint8_t MAX7219_REG_DIGIT0 = 0x01;
@@ -58,20 +64,20 @@ uint8_t matrixIntensity = MATRIX_GAME_INTENSITY;
 
 void max7219ShiftByte(uint8_t data) {
   for (int i = 7; i >= 0; i--) {
-    digitalWrite(MAX7219_CLK_PIN, LOW);
-    digitalWrite(MAX7219_DIN_PIN, (data & (1 << i)) ? HIGH : LOW);
-    digitalWrite(MAX7219_CLK_PIN, HIGH);
+    digitalWrite(CLK_PIN, LOW);
+    digitalWrite(DIN_PIN, (data & (1 << i)) ? HIGH : LOW);
+    digitalWrite(CLK_PIN, HIGH);
   }
 }
 
 // Send (reg, data) command pair to 2 cascaded MAX7219 devices: dev1 (Home) then dev0 (Away)
 void max7219Send(uint8_t reg1, uint8_t data1, uint8_t reg0, uint8_t data0) {
-  digitalWrite(MAX7219_CS_PIN, LOW);
+  digitalWrite(CS_PIN, LOW);
   max7219ShiftByte(reg1);
   max7219ShiftByte(data1);
   max7219ShiftByte(reg0);
   max7219ShiftByte(data0);
-  digitalWrite(MAX7219_CS_PIN, HIGH);
+  digitalWrite(CS_PIN, HIGH);
 }
 
 void max7219SendAll(uint8_t reg, uint8_t data) {
@@ -158,22 +164,15 @@ void writeMatrixRows(uint8_t awayRows[8], uint8_t homeRows[8]) {
 }
 } // namespace
 
-void initHardwareDrivers() {
-  // Discrete Count LEDs
-  pinMode(BALL_1_PIN, OUTPUT);
-  pinMode(BALL_2_PIN, OUTPUT);
-  pinMode(BALL_3_PIN, OUTPUT);
-  pinMode(STRIKE_1_PIN, OUTPUT);
-  pinMode(STRIKE_2_PIN, OUTPUT);
-  pinMode(OUT_1_PIN, OUTPUT);
-  pinMode(OUT_2_PIN, OUTPUT);
-  setCountLeds(0, 0, 0);
+void initLedMatrix(int dinPin, int clkPin, int csPin) {
+  DIN_PIN = dinPin;
+  CLK_PIN = clkPin;
+  CS_PIN = csPin;
 
-  // MAX7219 LED Matrix pins
-  pinMode(MAX7219_DIN_PIN, OUTPUT);
-  pinMode(MAX7219_CLK_PIN, OUTPUT);
-  pinMode(MAX7219_CS_PIN, OUTPUT);
-  digitalWrite(MAX7219_CS_PIN, HIGH);
+  pinMode(DIN_PIN, OUTPUT);
+  pinMode(CLK_PIN, OUTPUT);
+  pinMode(CS_PIN, OUTPUT);
+  digitalWrite(CS_PIN, HIGH);
 
   // Initialize MAX7219 registers
   max7219SendAll(MAX7219_REG_SHUTDOWN, 0x01);    // Normal operation
@@ -183,42 +182,7 @@ void initHardwareDrivers() {
   max7219SendAll(MAX7219_REG_DISPLAYTEST, 0x00); // Test off
 
   setMax7219Scores(MAX7219_SCORE_BLANK, MAX7219_SCORE_BLANK);
-  Serial.println("[HW] Hardware drivers initialized (Count LEDs + MAX7219 Matrices)");
-}
-
-void setCountLeds(uint8_t balls, uint8_t strikes, uint8_t outs) {
-  digitalWrite(BALL_1_PIN, balls >= 1 ? HIGH : LOW);
-  digitalWrite(BALL_2_PIN, balls >= 2 ? HIGH : LOW);
-  digitalWrite(BALL_3_PIN, balls >= 3 ? HIGH : LOW);
-
-  digitalWrite(STRIKE_1_PIN, strikes >= 1 ? HIGH : LOW);
-  digitalWrite(STRIKE_2_PIN, strikes >= 2 ? HIGH : LOW);
-
-  digitalWrite(OUT_1_PIN, outs >= 1 ? HIGH : LOW);
-  digitalWrite(OUT_2_PIN, outs >= 2 ? HIGH : LOW);
-}
-
-void runCountLedTestLoop() {
-  const int testPins[] = {
-    OUT_1_PIN,
-    OUT_2_PIN,
-    STRIKE_1_PIN,
-    STRIKE_2_PIN,
-    BALL_1_PIN,
-    BALL_2_PIN,
-    BALL_3_PIN
-  };
-
-  for (size_t i = 0; i < sizeof(testPins) / sizeof(testPins[0]); i++) {
-    for (size_t j = 0; j < sizeof(testPins) / sizeof(testPins[0]); j++) {
-      digitalWrite(testPins[j], j == i ? HIGH : LOW);
-    }
-
-    Serial.printf("[HW TEST] LED pin %d ON\n", testPins[i]);
-    delay(500);
-  }
-
-  setCountLeds(0, 0, 0);
+  Serial.println("[HW] MAX7219 matrix driver initialized");
 }
 
 void setMax7219Scores(int awayScore, int homeScore) {
@@ -241,7 +205,7 @@ void updateMax7219Clock(bool enabled) {
   }
 
   time_t now = time(nullptr);
-  if (now < 1704067200) return; // Wait until NTP has established the local clock.
+  if (!timeIsSynced()) return; // Wait until NTP has established the local clock.
 
   tm localTime = {};
   localtime_r(&now, &localTime);

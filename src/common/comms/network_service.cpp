@@ -11,15 +11,11 @@
 #include <qrcode.h>
 
 #include "config.h"
+#include "common/ui/ota_screen.h"
 #include "ota_update.h"
-#include "scoreboard.h"
 
-#include <Adafruit_ST7789.h>
-
-#include "config.h"
-#include "network.h"
-
-extern Adafruit_ST7789 display;
+#include "common/hal/tft_panel.h"
+#include "network_service.h"
 
 namespace {
 WebServer server(80);
@@ -37,10 +33,16 @@ const char DEFAULT_CONFIG[] = R"json({"version":1,"teams":[]})json";
 bool dnsRunning = false;
 bool apUp = false;
 bool otaStarted = false;
-String deviceHostname = NETWORK_HOSTNAME;
+// Branding + team options, injected at startNetworkServices() by the app
+// shell (from the sport's config/tables). Empty until then.
+NetworkBranding netBranding = {"Scoreboard", "SCOREBOARD", "scoreboard"};
+const NetworkTeamOption* netTeamOptions = nullptr;
+size_t netTeamOptionCount = 0;
+int netDefaultTeams[3] = {0, 0, 0};
+String deviceHostname;
 // Per-device setup AP SSID (set once MAC is known) so several
 // unprovisioned boards can be powered at once without SSID collisions.
-String apSsid = NETWORK_AP_SSID;
+String apSsid;
 
 // Credentials in NVS (last known good) and the pair being tried from the portal.
 String savedSsid;
@@ -205,7 +207,7 @@ void enterProvisioning() {
   Serial.println("[NET] Provisioning: waiting for portal credentials");
   logWiFiStatus(true);
   Serial.printf("[NET] AP ready: ssid=%s ip=%s\n",
-                NETWORK_AP_SSID,
+                apSsid.c_str(),
                 WiFi.softAPIP().toString().c_str());
 }
 
@@ -233,70 +235,30 @@ void tryReconnectWithSavedNetwork() {
   enterConnecting();
 }
 
-int prefTeam1 = 143; // Default PHI
-int prefTeam2 = 144; // Default ATL
-int prefTeam3 = 111; // Default BOS
-
-struct MlbTeamOption {
-  int id;
-  const char* name;
-};
-
-const MlbTeamOption MLB_TEAMS[] = {
-  {0, "-- None --"},
-  {108, "Los Angeles Angels (LAA)"},
-  {109, "Arizona Diamondbacks (ARI)"},
-  {110, "Baltimore Orioles (BAL)"},
-  {111, "Boston Red Sox (BOS)"},
-  {112, "Chicago Cubs (CHC)"},
-  {113, "Cincinnati Reds (CIN)"},
-  {114, "Cleveland Guardians (CLE)"},
-  {115, "Colorado Rockies (COL)"},
-  {116, "Detroit Tigers (DET)"},
-  {117, "Houston Astros (HOU)"},
-  {118, "Kansas City Royals (KC)"},
-  {119, "Los Angeles Dodgers (LAD)"},
-  {120, "Washington Nationals (WSH)"},
-  {121, "New York Mets (NYM)"},
-  {133, "Oakland Athletics (ATH)"},
-  {134, "Pittsburgh Pirates (PIT)"},
-  {135, "San Diego Padres (SD)"},
-  {136, "Seattle Mariners (SEA)"},
-  {137, "San Francisco Giants (SF)"},
-  {138, "St. Louis Cardinals (STL)"},
-  {139, "Tampa Bay Rays (TB)"},
-  {140, "Texas Rangers (TEX)"},
-  {141, "Toronto Blue Jays (TOR)"},
-  {142, "Minnesota Twins (MIN)"},
-  {143, "Philadelphia Phillies (PHI)"},
-  {144, "Atlanta Braves (ATL)"},
-  {145, "Chicago White Sox (CWS)"},
-  {146, "Miami Marlins (MIA)"},
-  {147, "New York Yankees (NYY)"},
-  {158, "Milwaukee Brewers (MIL)"}
-};
-const size_t MLB_TEAMS_COUNT = sizeof(MLB_TEAMS) / sizeof(MLB_TEAMS[0]);
+int prefTeam1 = 0; // populated from netDefaultTeams in loadSavedNetwork()
+int prefTeam2 = 0;
+int prefTeam3 = 0;
 
 void loadSavedNetwork() {
   preferences.begin("network", true);
   savedSsid = preferences.getString("ssid", "");
   savedPassword = preferences.getString("password", "");
-  prefTeam1 = preferences.getInt("team1", 143);
-  prefTeam2 = preferences.getInt("team2", 144);
-  prefTeam3 = preferences.getInt("team3", 111);
+  prefTeam1 = preferences.getInt("team1", netDefaultTeams[0]);
+  prefTeam2 = preferences.getInt("team2", netDefaultTeams[1]);
+  prefTeam3 = preferences.getInt("team3", netDefaultTeams[2]);
   clockDisplayEnabled = preferences.getBool("show_clock", true);
   preferences.end();
 }
 
 String buildTeamOptionsHtml(int selectedId) {
   String html = "";
-  for (size_t i = 0; i < MLB_TEAMS_COUNT; i++) {
+  for (size_t i = 0; i < netTeamOptionCount; i++) {
     html += "<option value=\"";
-    html += String(MLB_TEAMS[i].id);
+    html += String(netTeamOptions[i].id);
     html += "\"";
-    if (MLB_TEAMS[i].id == selectedId) html += " selected";
+    if (netTeamOptions[i].id == selectedId) html += " selected";
     html += ">";
-    html += MLB_TEAMS[i].name;
+    html += netTeamOptions[i].label;
     html += "</option>";
   }
   return html;
@@ -342,23 +304,10 @@ void refreshScanCache() {
   }
 }
 
-void renderConnectingScreen() {
-  display.fillScreen(0x012B);
-  display.setTextColor(ST77XX_WHITE);
-  display.setTextSize(2);
-  display.setCursor(8, 8);
-  display.print("SETUP WI-FI");
-  display.setTextSize(1);
-  display.setCursor(8, 100);
-  display.print("Connecting to network...");
-  if (!savedSsid.isEmpty()) {
-    display.setTextColor(0xFD20); // Gold
-    display.setCursor(8, 118);
-    display.print(savedSsid);
-  }
-}
-
 void renderAccessPointInstructions(const String& portalAddress, bool stationConnected) {
+  // Direct panel draw (no canvas): this screen replaces everything during
+  // provisioning and nothing else renders while it is up.
+  Adafruit_ST7789& display = tftPanel.raw();
   String portalUrl = "http://" + portalAddress + "/";
 
   display.fillScreen(0x012B);
@@ -443,13 +392,13 @@ void servePortal() {
   markPortalActivity();
   server.sendHeader("Cache-Control", "max-age=300");
   String page = R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MLB Scoreboard Setup</title><style>
+<title>@@NAME@@ Setup</title><style>
 body{margin:0;background:#061b46;color:#fff;font:16px system-ui,sans-serif}
 main{max-width:440px;margin:5vh auto;padding:24px;background:#0b2b62;border:2px solid #dfe9ff;border-radius:8px}
 h1{margin-top:0;font-size:24px}label{display:block;margin:14px 0 4px;font-weight:600}input,select{box-sizing:border-box;width:100%;padding:10px;border:0;border-radius:4px;font-size:15px}
 button{margin-top:20px;width:100%;padding:12px;background:#f5c400;border:0;border-radius:4px;font-weight:700;font-size:16px;color:#000;cursor:pointer}.hint{color:#c5d3ee;font-size:14px;line-height:1.4}
 hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
-</style></head><body><main><h1>MLB Scoreboard Setup</h1>
+</style></head><body><main><h1>@@NAME@@ Setup</h1>
 <p class="hint">Configure Wi-Fi connection and select your favorite teams in order of priority.</p>
 <form method="post" action="/save">
 <label for="network">Nearby Wi-Fi Networks</label>
@@ -495,6 +444,7 @@ else if(otaWaiting&&s.checked&&s.ok){otaWaiting=false;e.textContent='No update a
 })},2000);
 </script>
 <hr><p class="hint"><a style="color:#f5c400" href="/update">Upload new firmware (.bin)</a></p></main></body></html>)html";
+  page.replace("@@NAME@@", netBranding.deviceName);
   server.send(200, "text/html", page);
 }
 
@@ -760,7 +710,18 @@ void getPreferredTeamIds(int outTeamIds[3]) {
 }
 
 
-void startNetworkServices() {
+void startNetworkServices(const NetworkBranding& branding,
+                          const NetworkTeamOption* teamOptions,
+                          size_t teamOptionCount,
+                          const int defaultPreferredTeams[3]) {
+  netBranding = branding;
+  netTeamOptions = teamOptions;
+  netTeamOptionCount = teamOptionCount;
+  netDefaultTeams[0] = defaultPreferredTeams[0];
+  netDefaultTeams[1] = defaultPreferredTeams[1];
+  netDefaultTeams[2] = defaultPreferredTeams[2];
+  deviceHostname = branding.hostname;
+  apSsid = branding.apSsid;
   networkTaskStartedAt = millis();
   if (!LittleFS.begin(true)) {
     Serial.println("LittleFS unavailable; runtime settings disabled");
@@ -782,7 +743,7 @@ void startNetworkServices() {
   // The web server starts now and serves over whichever interface is up,
   // but the setup AP only comes up in enterProvisioning() — i.e. when
   // there's genuinely no saved network or connecting failed. Starting it
-  // eagerly at every boot broadcast MLB_SCOREBOARD for the whole connect
+  // eagerly at every boot broadcast the setup AP for the whole connect
   // window, letting phones that remember it auto-join and lose their
   // route the moment the device went online (setup page then "hung").
   server.begin();
