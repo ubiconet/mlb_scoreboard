@@ -144,7 +144,7 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
 version string:
 
 ```cpp
-static const char* FIRMWARE_VERSION = "v2.59";
+static const char* FIRMWARE_VERSION = "v2.60";
 ```
 
 This string is drawn on the boot splash (see `renderBootSplash()` in
@@ -182,7 +182,7 @@ firmware is on the device. `tools/release_deploy.py` reads it from
 ### Example edit
 
 ```diff
-- static const char* FIRMWARE_VERSION = "v2.59";
+- static const char* FIRMWARE_VERSION = "v2.60";
 + static const char* FIRMWARE_VERSION = "v2.60";
 ```
 
@@ -241,7 +241,7 @@ After any non-trivial change:
    errors. Warnings about unused variables/functions are okay but should
    be addressed before bumping the firmware version. Also sanity-check
    flash size against the 1.5 MB OTA partition (the build prints the
-   percentage; v2.59 sits ~91.4%).
+   percentage; v2.60 sits ~91.2%).
 2. Upload to the device (OTA or USB).
 3. Confirm via Serial Monitor (with `-DSB_DEBUG=1`) or the on-screen
    diagnostics that:

@@ -10,6 +10,9 @@
 #include <WiFi.h>
 #include <qrcode.h>
 
+#include <stdlib.h>
+#include <time.h>
+
 #include "config.h"
 #include "common/ui/ota_screen.h"
 #include "ota_update.h"
@@ -51,6 +54,73 @@ String pendingSsid;
 String pendingPassword;
 bool hasPending = false;
 bool clockDisplayEnabled = true;
+
+// Display timezone, persisted in NVS ("tz") and selected in the portal.
+// POSIX TZ strings (not IANA names): they are self-contained — DST rules and
+// all — so no tz database needs to ship in the firmware. FACTORY_DEFAULT_TIMEZONE
+// (src/config.h) only covers the very first boot before a selection is saved.
+String tzString;
+
+struct TzOption {
+  const char* label;
+  const char* posix;
+};
+const TzOption TZ_OPTIONS[] = {
+  {"UTC",                                    "UTC0"},
+  {"US Eastern (New York)",                  "EST5EDT,M3.2.0,M11.1.0"},
+  {"US Central (Chicago)",                   "CST6CDT,M3.2.0,M11.1.0"},
+  {"US Mountain (Denver)",                   "MST7MDT,M3.2.0,M11.1.0"},
+  {"US Arizona (no DST)",                    "MST7"},
+  {"US Pacific (Los Angeles)",               "PST8PDT,M3.2.0,M11.1.0"},
+  {"Alaska (Anchorage)",                     "AKST9AKDT,M3.2.0,M11.1.0"},
+  {"Hawaii (Honolulu)",                      "HST10"},
+  {"Canada Atlantic (Halifax)",              "AST4ADT,M3.2.0,M11.1.0"},
+  {"Canada Newfoundland",                    "NST3:30NDT,M3.2.0,M11.1.0"},
+  {"UK & Ireland",                           "GMT0BST,M3.5.0/1,M10.5.0"},
+  {"Central Europe (Paris/Berlin)",          "CET-1CEST,M3.5.0,M10.5.0/3"},
+  {"Eastern Europe (Athens/Helsinki)",       "EET-2EEST,M3.5.0/3,M10.5.0/4"},
+  {"India",                                  "IST-5:30"},
+  {"Japan (Tokyo)",                          "JST-9"},
+  {"Australia Eastern (Sydney)",             "AEST-10AEDT,M10.1.0,M4.1.0/3"},
+  {"Australia Western (Perth)",              "AWST-8"},
+};
+const size_t TZ_OPTIONS_COUNT = sizeof(TZ_OPTIONS) / sizeof(TZ_OPTIONS[0]);
+
+// Only strings from TZ_OPTIONS are accepted from the portal — never feed the
+// TZ environment variable arbitrary user input.
+bool isValidTzString(const char* posix) {
+  if (posix == nullptr) return false;
+  for (size_t i = 0; i < TZ_OPTIONS_COUNT; ++i) {
+    if (strcmp(TZ_OPTIONS[i].posix, posix) == 0) return true;
+  }
+  return false;
+}
+
+// Applies the stored timezone to the C library (localtime/mktime everywhere —
+// idle matrix clock, upcoming-game times, the schedule-day window — follows
+// it). Time itself was already NTP-synced by the shell's one-shot
+// configTzTime(); a mid-session change only needs the TZ update, not a
+// re-sync. Runs on the network task; a concurrent localtime on the render
+// core can at worst produce one odd frame during the switch.
+void applyTimezone() {
+  setenv("TZ", tzString.c_str(), 1);
+  tzset();
+  DBG_PRINTF("[NET] timezone applied: %s\n", tzString.c_str());
+}
+
+String buildTzOptionsHtml(const char* selected) {
+  String html = "";
+  for (size_t i = 0; i < TZ_OPTIONS_COUNT; ++i) {
+    html += "<option value=\"";
+    html += TZ_OPTIONS[i].posix;
+    html += "\"";
+    if (strcmp(TZ_OPTIONS[i].posix, selected) == 0) html += " selected";
+    html += ">";
+    html += TZ_OPTIONS[i].label;
+    html += "</option>";
+  }
+  return html;
+}
 
 uint32_t stateStartedAt = 0;
 uint32_t lastProbeAt = 0;
@@ -247,6 +317,11 @@ void loadSavedNetwork() {
   prefTeam2 = preferences.getInt("team2", netDefaultTeams[1]);
   prefTeam3 = preferences.getInt("team3", netDefaultTeams[2]);
   clockDisplayEnabled = preferences.getBool("show_clock", true);
+  tzString = preferences.getString("tz", FACTORY_DEFAULT_TIMEZONE);
+  if (!isValidTzString(tzString.c_str())) {
+    tzString = FACTORY_DEFAULT_TIMEZONE;  // unknown/legacy value: fall back
+  }
+  applyTimezone();
   preferences.end();
 }
 
@@ -421,6 +496,11 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
 <label for="team3">Priority 3 Team</label><select id="team3" name="team3">)html";
   page += buildTeamOptionsHtml(prefTeam3);
   page += R"html(</select>
+<hr><h3>Display Time Zone</h3>
+<label for="tz">Used for game times, countdowns, and the idle clock</label>
+<select id="tz" name="tz">)html";
+  page += buildTzOptionsHtml(tzString.c_str());
+  page += R"html(</select>
 <hr><label style="display:flex;align-items:center;gap:10px" for="show-clock"><input style="width:auto" id="show-clock" name="show_clock" type="checkbox" value="1")html";
   if (clockDisplayEnabled) page += " checked";
   page += R"html(>Display current time on score boards when no game is live</label>
@@ -462,6 +542,16 @@ void saveNetwork() {
   if (server.hasArg("team2")) prefTeam2 = server.arg("team2").toInt();
   if (server.hasArg("team3")) prefTeam3 = server.arg("team3").toInt();
   clockDisplayEnabled = server.hasArg("show_clock");
+  // Timezone is validated against the option table before it is trusted.
+  bool tzChanged = false;
+  if (server.hasArg("tz")) {
+    String requestedTz = server.arg("tz");
+    if (isValidTzString(requestedTz.c_str()) &&
+        !requestedTz.equals(tzString)) {
+      tzString = requestedTz;
+      tzChanged = true;
+    }
+  }
 
   // Network settings only count as changed when a new SSID is supplied or a
   // password is (re-)entered; otherwise this is a team-preferences-only save
@@ -474,26 +564,31 @@ void saveNetwork() {
     return;
   }
 
-  // Team preferences always persist; credentials only when they changed.
+  // Team/timezone preferences always persist; credentials only when they changed.
   preferences.begin("network", false);
   preferences.putInt("team1", prefTeam1);
   preferences.putInt("team2", prefTeam2);
   preferences.putInt("team3", prefTeam3);
   preferences.putBool("show_clock", clockDisplayEnabled);
+  preferences.putString("tz", tzString);
   if (networkChanging) {
     preferences.putString("ssid", pendingSsid);
     preferences.putString("password", pendingPassword);
   }
   preferences.end();
 
+  if (tzChanged) {
+    applyTimezone();  // game times + idle clock follow on the next render
+  }
+
   if (!networkChanging) {
-    Serial.printf("[NET] Teams-only save: [%d, %d, %d] (network untouched)\n",
-                  prefTeam1, prefTeam2, prefTeam3);
+    Serial.printf("[NET] Preferences-only save: teams=[%d, %d, %d] tz=%s (network untouched)\n",
+                  prefTeam1, prefTeam2, prefTeam3, tzString.c_str());
     server.send(200, "text/html", R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Saved</title><style>body{margin:0;background:#061b46;color:#fff;font:16px system-ui,sans-serif}
 main{max-width:420px;margin:8vh auto;padding:28px;background:#0b2b62;border:2px solid #dfe9ff;border-radius:8px;text-align:center}
-</style></head><body><main><h1>Teams Saved</h1>
-<p>Team priorities updated — the scoreboard picks them up within a minute.</p>
+</style></head><body><main><h1>Settings Saved</h1>
+<p>Team priorities and time zone updated — the scoreboard picks them up within a minute.</p>
 <p>Wi-Fi settings were not changed.</p>
 <p><a style="color:#f5c400" href="/">Back to configuration</a></p></main></body></html>)html");
     return;
@@ -701,6 +796,13 @@ String getDeviceIp() {
 
 bool isClockDisplayEnabled() {
   return clockDisplayEnabled;
+}
+
+// Effective display timezone as a POSIX TZ string ("EST5EDT,M3.2.0,M11.1.0").
+// Selected in the setup portal, persisted in NVS ("tz"); the factory default
+// only applies before the first selection is saved.
+const char* getTzString() {
+  return tzString.c_str();
 }
 
 void getPreferredTeamIds(int outTeamIds[3]) {
