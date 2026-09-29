@@ -56,6 +56,11 @@ is a folder under `src/sports/` that implements the `sport::` contract
    - `mlb_client.*` — feed endpoints + JSON filters (build on
      `common/comms/http_fetcher`; keep feeds on plain HTTP, payloads small).
    - `mlb_data_task.cpp` — poll cadence + parse-to-snapshot publishing.
+     **Keep the OTA wiring**: the loop must call
+     `serviceOtaUpdates(onlineFor)` every pass, hold feeds while
+     `otaUpdateInProgress()`, and gate the first feed fetch behind
+     `otaBootGateReached()` — the NHL port dropped these calls once and
+     its GitHub self-updater was silently dead until they were restored.
    - `mlb_app.cpp` / renderer files — your screens and state machine.
    - `team_logos.h` / `boot_logo.h` — regenerate assets
      (`tools/gen_boot_logo.py` pattern: RGB565, 0x1909 transparent).

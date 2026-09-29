@@ -124,17 +124,45 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
   matches the published manifest version (devices only flash strictly
   newer versions), so **bump `FIRMWARE_VERSION` in `src/config.h` before
   every deploy**. GitHub's raw CDN caches the manifest ~5 min after a push.
-- **Self-update flow** (`src/common/comms/ota_update.cpp`): shortly after
-  the network comes online (before any feed fetch — the TLS handshake needs
-  the pristine boot heap), the core-0 data task fetches the manifest over
-  TLS (the only TLS connection left; the feeds run plain HTTP — see the
-  note at the top of `sports/mlb/mlb_client.cpp` and
+- **Self-update flow** (`src/common/comms/ota_update.cpp`; approach
+  verified end-to-end on the same framework/hardware in the NHL port —
+  device pulled a 1.67 MB release from GitHub raw and rebooted into it
+  in ~25 s): shortly after the network comes online (before any feed
+  fetch — the TLS handshake needs the pristine boot heap; on this core
+  2.0.x the 2x16 KB mbedTLS buffers cannot be shrunk, `setBufferSizes`
+  is a 3.x API), the core-0 data task fetches the manifest over TLS
+  (the only TLS connection the updater makes; the feeds run plain
+  HTTP — see the note at the top of `sports/mlb/mlb_client.cpp` and
   `common/comms/http_fetcher.h`). If the manifest version is strictly
   newer than `FIRMWARE_VERSION`, manifest and binary download over ONE
-  reused TLS session while the renderer shows the "do not turn off"
-  progress screen (`common/ui/ota_screen.cpp`), then the device reboots
-  into the new image. Failures leave the current firmware running and
-  retry (2 tries in the boot window, then every 10 min).
+  reused TLS session (this AP refuses a second fresh TLS handshake
+  moments after the first) while the renderer shows the "do not turn
+  off" progress screen (`common/ui/ota_screen.cpp`), then the device
+  reboots into the new image. Failures leave the current firmware
+  running.
+- **Update checks are BOOT-ONLY** (adopted from the NHL port): the
+  automatic check runs exactly once per power cycle — two attempts in
+  the boot window, then never again mid-session (the fragmented
+  post-feed heap can't fund the handshake, and the AP refuses later
+  fresh TLS connections). To update a running device: power-cycle it,
+  or use the portal's "check now". The portal button remains available
+  and works best right after a boot.
+- **CRITICAL WIRING** — the sport's data task MUST call
+  `serviceOtaUpdates(onlineFor)` every loop pass, hold feeds while
+  `otaUpdateInProgress()`, and gate the first feed fetch behind
+  `otaBootGateReached(onlineFor)` (this repo's
+  `mlbDataTaskLoop` does; the NHL port dropped these calls once and
+  its updater was silently dead until restored — don't repeat that).
+- **Testing an OTA release**: (1) deploy the release (vN) to GitHub;
+  (2) build a DEBUG firmware labeled vN-1 (`-DSB_DEBUG=1`,
+  `-DARDUINO_USB_CDC_ON_BOOT=0` so logs reach the CH343 UART) and
+  flash it over serial; (3) wait out the ~5 min raw-CDN manifest
+  cache; (4) reset the board via the CH343 auto-reset lines (RTS high
+  120 ms → release) and capture serial: expect `[OTA] manifest ->
+  HTTP 200`, `update available`, `flashed N bytes OK`, then a second
+  ROM banner as the device reboots into the release. The device's
+  portal `/ota/status` shows `checked/ok` and the splash shows the
+  new version.
 
 ---
 
