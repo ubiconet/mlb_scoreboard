@@ -41,6 +41,7 @@ Or from PowerShell:
 curl.exe -F "update=@releases\mlb_scoreboard_latest.bin" http://<device-ip>/update
 ```
 
-The auto-update keeps running in the background (6 attempts at boot, then
-every 10 minutes) and will catch up on its own whenever the network allows
-the TLS connection through.
+The auto-update runs its check once per power cycle, in the boot window
+before the feed fetches (the fragmented post-feed heap cannot fund the TLS
+handshake). To update a running device: power-cycle it, or use the
+portal's "Check for Update Now" button.

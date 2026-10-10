@@ -41,8 +41,8 @@ description: Build the MLBScoreboard firmware and publish a release to GitHub (r
 
 ## Getting the update onto the device
 
-The device checks the manifest automatically after boot (6 attempts in the
-first ~100 s, then every 10 min) and flashes itself. On this install's
+The device checks the manifest automatically ONCE per power cycle (in the
+boot window, on the pristine heap) and flashes itself. On this install's
 network, TLS (port 443) to GitHub is frequently blocked, so when the user
 wants the device updated NOW, use the portal upload instead — it serves
 plain HTTP on the LAN and always works:

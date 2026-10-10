@@ -487,7 +487,7 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
 <p class="hint">Take manual control: inning, top/bottom, scores, and balls/strikes/outs from a dedicated page. The scoreboard splash screen shows on the TFT while active.</p>
 <p><a style="color:#f5c400" href="/manual">Open Manual Mode &rarr;</a></p>
 <hr><h3>Firmware Update</h3>
-<p class="hint">Installed: )html" + String(FIRMWARE_VERSION) + R"html(. Automatic checks run at boot and every 10 minutes.</p>
+<p class="hint">Installed: )html" + String(FIRMWARE_VERSION) + R"html(. Automatic check runs once at boot; use the button below to check on demand.</p>
 <button type="button" style="margin-top:8px" onclick="otaCheck()">Check for Update Now</button>
 <p class="hint" id="otaStatus">&nbsp;</p>
 <p class="hint">Latest binary (for manual updates):<br>
