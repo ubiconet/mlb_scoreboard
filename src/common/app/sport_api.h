@@ -30,22 +30,13 @@ namespace sport {
 
 // ---- Identity ----
 
-// Human-facing device name, e.g. "MLB Scoreboard" — drawn on the boot
+// Human-facing device name, e.g. "Baseball Scoreboard" — drawn on the boot
 // status page and used for portal branding.
 const char* name();
 
 // Network branding (AP SSID, base hostname, portal title) injected into the
 // generic network service.
 NetworkBranding branding();
-
-// ---- Setup-portal team options ----
-
-// The selectable team list for the portal's preferred-team dropdowns
-// (first entry should be the {0, "-- None --"} sentinel).
-const NetworkTeamOption* teamOptions(size_t& count);
-
-// Preferred-team ids preloaded when NVS has none saved yet.
-const int* defaultPreferredTeams();
 
 // ---- Lifecycle ----
 

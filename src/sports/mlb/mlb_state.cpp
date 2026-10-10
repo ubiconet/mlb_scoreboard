@@ -10,14 +10,9 @@ SnapshotChannel<LinescoreSnapshot> gLinescoreChannel;
 SnapshotChannel<PlaySnapshot>      gPlayChannel;
 SnapshotChannel<ScheduleSnapshot>  gScheduleChannel;
 
-// Upcoming-schedule JSON cache (the ONE JsonDocument allowed on the render
-// core — see AGENTS.md).
-JsonDocument gUpcomingScheduleDoc;
-uint32_t     gUpcomingSchedulePublishedAt = 0;
-
 // Cross-task counters + error tag for the schedule fetch. The data task on
 // core 0 increments these every time it tries (and fails) to fetch the
-// schedule; the renderer reads them for the "no upcoming games" diagnostic
+// schedule; the renderer reads them for the waiting-mode standby screen
 // screen so fetch failures can be told apart from publish ones.
 volatile uint32_t gScheduleFetchAttempts  = 0;
 volatile uint32_t gScheduleFetchSuccesses = 0;
@@ -47,35 +42,6 @@ int gActiveGamePk = 0;
 
 int getActiveGamePk() { return gActiveGamePk; }
 void setActiveGamePk(int gamePk) { gActiveGamePk = gamePk; }
-
-void publishUpcomingScheduleJson(JsonObjectConst src) {
-  if (src.isNull()) {
-    gUpcomingScheduleDoc.clear();
-    gUpcomingSchedulePublishedAt = millis();
-    return;
-  }
-  gUpcomingScheduleDoc.clear();
-  if (!gUpcomingScheduleDoc.set(src)) {
-    DBG_PRINTF("[SCHED] republish copy failed\n");
-    gUpcomingScheduleDoc.clear();
-    gUpcomingSchedulePublishedAt = millis();
-    return;
-  }
-  gUpcomingSchedulePublishedAt = millis();
-  size_t dateCount = 0, gameCount = 0;
-  for (JsonObjectConst date : src["dates"].as<JsonArrayConst>()) {
-    ++dateCount;
-    JsonArrayConst games = date["games"].as<JsonArrayConst>();
-    if (!games.isNull()) gameCount += games.size();
-  }
-  DBG_PRINTF("[SCHED] republished: %u dates, %u games\n",
-             (unsigned)dateCount, (unsigned)gameCount);
-}
-JsonObjectConst getUpcomingScheduleJson() {
-  return gUpcomingScheduleDoc.as<JsonObjectConst>();
-}
-uint32_t getUpcomingSchedulePublishedAt() { return gUpcomingSchedulePublishedAt; }
-size_t   getUpcomingScheduleDocSize()     { return gUpcomingScheduleDoc.size(); }
 
 uint32_t getScheduleFetchAttempts()  { return gScheduleFetchAttempts; }
 uint32_t getScheduleFetchSuccesses() { return gScheduleFetchSuccesses; }

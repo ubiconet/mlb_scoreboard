@@ -36,12 +36,9 @@ const char DEFAULT_CONFIG[] = R"json({"version":1,"teams":[]})json";
 bool dnsRunning = false;
 bool apUp = false;
 bool otaStarted = false;
-// Branding + team options, injected at startNetworkServices() by the app
-// shell (from the sport's config/tables). Empty until then.
+// Branding injected at startNetworkServices() by the app shell (from the
+// sport's config). Empty until then.
 NetworkBranding netBranding = {"Scoreboard", "SCOREBOARD", "scoreboard"};
-const NetworkTeamOption* netTeamOptions = nullptr;
-size_t netTeamOptionCount = 0;
-int netDefaultTeams[3] = {0, 0, 0};
 String deviceHostname;
 // Per-device setup AP SSID (set once MAC is known) so several
 // unprovisioned boards can be powered at once without SSID collisions.
@@ -54,6 +51,20 @@ String pendingSsid;
 String pendingPassword;
 bool hasPending = false;
 bool clockDisplayEnabled = true;
+
+// ---- Manual mode state (set from the manual web page on this task,
+// read by the render core; small ints/bools, benign races at worst) ----
+volatile bool manualMode = false;
+volatile int  manualHomeScore = 0;
+volatile int  manualAwayScore = 0;
+volatile int  manualInning = 1;
+volatile bool manualTopOfInning = true;
+volatile int  manualBalls = 0;
+volatile int  manualStrikes = 0;
+volatile int  manualOuts = 0;
+
+int clampManualScore(int v) { return v < 0 ? 0 : (v > 99 ? 99 : v); }
+int clampManualCount(int v, int maxv) { return v < 0 ? 0 : (v > maxv ? maxv : v); }
 
 // Display timezone, persisted in NVS ("tz") and selected in the portal.
 // POSIX TZ strings (not IANA names): they are self-contained — DST rules and
@@ -305,17 +316,10 @@ void tryReconnectWithSavedNetwork() {
   enterConnecting();
 }
 
-int prefTeam1 = 0; // populated from netDefaultTeams in loadSavedNetwork()
-int prefTeam2 = 0;
-int prefTeam3 = 0;
-
 void loadSavedNetwork() {
   preferences.begin("network", true);
   savedSsid = preferences.getString("ssid", "");
   savedPassword = preferences.getString("password", "");
-  prefTeam1 = preferences.getInt("team1", netDefaultTeams[0]);
-  prefTeam2 = preferences.getInt("team2", netDefaultTeams[1]);
-  prefTeam3 = preferences.getInt("team3", netDefaultTeams[2]);
   clockDisplayEnabled = preferences.getBool("show_clock", true);
   tzString = preferences.getString("tz", FACTORY_DEFAULT_TIMEZONE);
   if (!isValidTzString(tzString.c_str())) {
@@ -324,21 +328,6 @@ void loadSavedNetwork() {
   applyTimezone();
   preferences.end();
 }
-
-String buildTeamOptionsHtml(int selectedId) {
-  String html = "";
-  for (size_t i = 0; i < netTeamOptionCount; i++) {
-    html += "<option value=\"";
-    html += String(netTeamOptions[i].id);
-    html += "\"";
-    if (netTeamOptions[i].id == selectedId) html += " selected";
-    html += ">";
-    html += netTeamOptions[i].label;
-    html += "</option>";
-  }
-  return html;
-}
-
 
 String htmlEscape(const String& text) {
   String out;
@@ -474,7 +463,7 @@ h1{margin-top:0;font-size:24px}label{display:block;margin:14px 0 4px;font-weight
 button{margin-top:20px;width:100%;padding:12px;background:#f5c400;border:0;border-radius:4px;font-weight:700;font-size:16px;color:#000;cursor:pointer}.hint{color:#c5d3ee;font-size:14px;line-height:1.4}
 hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
 </style></head><body><main><h1>@@NAME@@ Setup</h1>
-<p class="hint">Configure Wi-Fi connection and select your favorite teams in order of priority.</p>
+<p class="hint">Configure the Wi-Fi connection and display settings.</p>
 <form method="post" action="/save">
 <label for="network">Nearby Wi-Fi Networks</label>
 <select id="network" onchange="ssid.value=this.value"><option value="">Enter network manually</option>)html";
@@ -484,20 +473,9 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
   page += htmlEscape(savedSsid);
   page += R"html(" required maxlength="32" autocomplete="off">
 <label for="password">Wi-Fi Password</label><input id="password" name="password" type="password" maxlength="63" autocomplete="off">
-<p class="hint">Leave the password blank and the network unchanged to save team preferences without touching the connection.</p>
-<hr>
-<h3>Favorite Team Priorities</h3>
-<label for="team1">Priority 1 Team (Primary)</label><select id="team1" name="team1">)html";
-  page += buildTeamOptionsHtml(prefTeam1);
-  page += R"html(</select>
-<label for="team2">Priority 2 Team</label><select id="team2" name="team2">)html";
-  page += buildTeamOptionsHtml(prefTeam2);
-  page += R"html(</select>
-<label for="team3">Priority 3 Team</label><select id="team3" name="team3">)html";
-  page += buildTeamOptionsHtml(prefTeam3);
-  page += R"html(</select>
+<p class="hint">Leave the password blank and the network unchanged to save display settings without touching the connection.</p>
 <hr><h3>Display Time Zone</h3>
-<label for="tz">Used for game times, countdowns, and the idle clock</label>
+<label for="tz">Used for game times and the idle clock</label>
 <select id="tz" name="tz">)html";
   page += buildTzOptionsHtml(tzString.c_str());
   page += R"html(</select>
@@ -505,6 +483,9 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
   if (clockDisplayEnabled) page += " checked";
   page += R"html(>Display current time on score boards when no game is live</label>
 <button type="submit">Save & Connect Scoreboard</button></form>
+<hr><h3>Manual Mode</h3>
+<p class="hint">Take manual control: inning, top/bottom, scores, and balls/strikes/outs from a dedicated page. The scoreboard splash screen shows on the TFT while active.</p>
+<p><a style="color:#f5c400" href="/manual">Open Manual Mode &rarr;</a></p>
 <hr><h3>Firmware Update</h3>
 <p class="hint">Installed: )html" + String(FIRMWARE_VERSION) + R"html(. Automatic checks run at boot and every 10 minutes.</p>
 <button type="button" style="margin-top:8px" onclick="otaCheck()">Check for Update Now</button>
@@ -538,9 +519,6 @@ void saveNetwork() {
   markPortalActivity();
   pendingSsid = server.arg("ssid");
   pendingPassword = server.arg("password");
-  if (server.hasArg("team1")) prefTeam1 = server.arg("team1").toInt();
-  if (server.hasArg("team2")) prefTeam2 = server.arg("team2").toInt();
-  if (server.hasArg("team3")) prefTeam3 = server.arg("team3").toInt();
   clockDisplayEnabled = server.hasArg("show_clock");
   // Timezone is validated against the option table before it is trusted.
   bool tzChanged = false;
@@ -554,7 +532,7 @@ void saveNetwork() {
   }
 
   // Network settings only count as changed when a new SSID is supplied or a
-  // password is (re-)entered; otherwise this is a team-preferences-only save
+  // password is (re-)entered; otherwise this is a display-settings-only save
   // and the Wi-Fi connection must be left alone.
   bool networkChanging = !pendingSsid.isEmpty() &&
                          (pendingSsid != savedSsid || !pendingPassword.isEmpty());
@@ -564,11 +542,8 @@ void saveNetwork() {
     return;
   }
 
-  // Team/timezone preferences always persist; credentials only when they changed.
+  // Display preferences always persist; credentials only when they changed.
   preferences.begin("network", false);
-  preferences.putInt("team1", prefTeam1);
-  preferences.putInt("team2", prefTeam2);
-  preferences.putInt("team3", prefTeam3);
   preferences.putBool("show_clock", clockDisplayEnabled);
   preferences.putString("tz", tzString);
   if (networkChanging) {
@@ -582,13 +557,13 @@ void saveNetwork() {
   }
 
   if (!networkChanging) {
-    Serial.printf("[NET] Preferences-only save: teams=[%d, %d, %d] tz=%s (network untouched)\n",
-                  prefTeam1, prefTeam2, prefTeam3, tzString.c_str());
+    Serial.printf("[NET] Preferences-only save: tz=%s show_clock=%d (network untouched)\n",
+                  tzString.c_str(), clockDisplayEnabled ? 1 : 0);
     server.send(200, "text/html", R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Saved</title><style>body{margin:0;background:#061b46;color:#fff;font:16px system-ui,sans-serif}
 main{max-width:420px;margin:8vh auto;padding:28px;background:#0b2b62;border:2px solid #dfe9ff;border-radius:8px;text-align:center}
 </style></head><body><main><h1>Settings Saved</h1>
-<p>Team priorities and time zone updated — the scoreboard picks them up within a minute.</p>
+<p>Display settings updated — the scoreboard picks them up within a minute.</p>
 <p>Wi-Fi settings were not changed.</p>
 <p><a style="color:#f5c400" href="/">Back to configuration</a></p></main></body></html>)html");
     return;
@@ -612,7 +587,7 @@ main{max-width:420px;margin:8vh auto;padding:28px;background:#0b2b62;border:2px 
 if(s.state==='online'){document.getElementById('status').textContent='Connected! The scoreboard is going online.'}
 else if(s.state==='provisioning'){document.getElementById('status').textContent='Could not connect or no internet. Check the password and try again.'}
 })},2000)</script></main></body></html>)html");
-  Serial.printf("Saved network '%s' and Teams [%d, %d, %d]\n", pendingSsid.c_str(), prefTeam1, prefTeam2, prefTeam3);
+  Serial.printf("Saved network '%s'\n", pendingSsid.c_str());
 }
 
 
@@ -720,6 +695,95 @@ void handleUpdateResult() {
   ESP.restart();
 }
 
+void serveManualPage() {
+  markPortalActivity();
+  manualMode = true;  // arriving at the page engages manual mode
+  server.sendHeader("Cache-Control", "no-store");
+  String page = R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>@@NAME@@ Manual</title><style>
+body{margin:0;background:#061b46;color:#fff;font:14px system-ui,sans-serif}
+main{max-width:430px;margin:0 auto;padding:8px}
+h1{font-size:16px;margin:0 0 2px}.muted{color:#c5d3ee;font-size:12px}
+button{padding:8px;border:0;border-radius:6px;font-weight:700;font-size:15px;cursor:pointer;touch-action:manipulation}
+.big{width:100%;padding:12px 0;font-size:19px}
+.dec,.inc{width:46px;height:46px;background:#2a5daf;color:#fff;font-size:23px}
+.val{display:inline-block;min-width:52px;text-align:center;font-size:21px;font-weight:800;margin:0 6px}
+.row{display:flex;align-items:center;justify-content:center;margin:6px 0}
+.cols{display:flex;gap:8px}.col{flex:1;background:#0b2b62;border:1px solid #1c4587;border-radius:8px;padding:8px}
+.col h2{text-align:center;font-size:14px;margin:1px 0 6px}
+.lbl{text-align:center;color:#c5d3ee;font-size:12px;margin:2px 0 0}
+hr{border:0;border-top:1px solid #1c4587;margin:8px 0}
+.tb{background:#2a5daf;color:#fff}.tb.bot{background:#6a1b9a}
+.exit{background:#777;color:#fff;width:100%;padding:10px}
+</style></head><body><main>
+<h1>@@NAME@@ &mdash; Manual Mode</h1>
+<div class="cols">
+<div class="col"><h2>HOME</h2>
+<p class="lbl">score</p>
+<div class="row"><button class="dec" onclick="adj('hs',-1)">&minus;</button><span class="val" id="hs">0</span><button class="inc" onclick="adj('hs',1)">+</button></div>
+</div>
+<div class="col"><h2>AWAY</h2>
+<p class="lbl">score</p>
+<div class="row"><button class="dec" onclick="adj('as',-1)">&minus;</button><span class="val" id="as">0</span><button class="inc" onclick="adj('as',1)">+</button></div>
+</div>
+</div>
+<div class="row"><span class="muted">inning</span>
+<button class="dec" onclick="adj('inn',-1)">&minus;</button><span class="val" id="inn">1</span><button class="inc" onclick="adj('inn',1)">+</button></div>
+<div class="row"><button id="tbBtn" class="big tb" onclick="toggleTB()">TOP</button></div>
+<hr>
+<div class="cols">
+<div class="col"><p class="lbl">BALLS</p>
+<div class="row"><button class="dec" onclick="adj('b',-1)">&minus;</button><span class="val" id="b">0</span><button class="inc" onclick="adj('b',1)">+</button></div>
+</div>
+<div class="col"><p class="lbl">STRIKES</p>
+<div class="row"><button class="dec" onclick="adj('s',-1)">&minus;</button><span class="val" id="s">0</span><button class="inc" onclick="adj('s',1)">+</button></div>
+</div>
+<div class="col"><p class="lbl">OUTS</p>
+<div class="row"><button class="dec" onclick="adj('o',-1)">&minus;</button><span class="val" id="o">0</span><button class="inc" onclick="adj('o',1)">+</button></div>
+</div>
+</div>
+<hr><button class="exit" onclick="location.href='/manual/exit'">Exit Manual Mode</button>
+</main></body></html>
+<script>
+var m={hs:0,as:0,inn:1,tb:0,b:0,s:0,o:0};
+var lim={hs:99,as:99,inn:99,b:3,s:2,o:2};
+function paint(){for(var k of ['hs','as','inn','b','s','o'])document.getElementById(k).textContent=m[k];
+var t=document.getElementById('tbBtn');t.textContent=m.tb?'BOTTOM':'TOP';t.className='big tb'+(m.tb?' bot':'')}
+function send(){var p=new URLSearchParams();p.set('hs',m.hs);p.set('as',m.as);p.set('inn',m.inn);
+p.set('tb',m.tb);p.set('b',m.b);p.set('s',m.s);p.set('o',m.o);
+fetch('/manual/set',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:p.toString()});paint()}
+function adj(k,d){m[k]+=d;if(m[k]<0)m[k]=0;if(k=='inn'&&m[k]<1)m[k]=1;if(m[k]>lim[k])m[k]=lim[k];send()}
+function toggleTB(){m.tb=m.tb?0:1;send()}
+paint();
+</script>)html";
+  page.replace("@@NAME@@", netBranding.deviceName);
+  server.send(200, "text/html", page);
+}
+
+void handleManualSet() {
+  markPortalActivity();
+  if (server.hasArg("hs")) manualHomeScore = clampManualScore(server.arg("hs").toInt());
+  if (server.hasArg("as")) manualAwayScore = clampManualScore(server.arg("as").toInt());
+  if (server.hasArg("inn")) {
+    int v = server.arg("inn").toInt();
+    manualInning = (v >= 1 && v <= 99) ? v : 1;
+  }
+  if (server.hasArg("tb")) {
+    manualTopOfInning = server.arg("tb").toInt() == 0;
+  }
+  if (server.hasArg("b")) manualBalls   = clampManualCount(server.arg("b").toInt(), 3);
+  if (server.hasArg("s")) manualStrikes = clampManualCount(server.arg("s").toInt(), 2);
+  if (server.hasArg("o")) manualOuts    = clampManualCount(server.arg("o").toInt(), 2);
+  server.send(200, "text/plain", "ok");
+}
+
+void handleManualExit() {
+  markPortalActivity();
+  manualMode = false;
+  server.sendHeader("Location", "/", true);
+  server.send(302, "text/plain", "");
+}
+
 void registerPortalRoutes() {
   server.on("/", HTTP_GET, servePortal);
   server.on("/status", HTTP_GET, serveStatus);
@@ -730,6 +794,9 @@ void registerPortalRoutes() {
   server.on("/ota/check", HTTP_POST, handleOtaCheckNow);
   server.on("/ota/status", HTTP_GET, serveOtaStatus);
   server.on("/update", HTTP_POST, handleUpdateResult, handleUpdateUpload);
+  server.on("/manual", HTTP_GET, serveManualPage);
+  server.on("/manual/set", HTTP_POST, handleManualSet);
+  server.on("/manual/exit", HTTP_GET, handleManualExit);
   server.onNotFound(redirectToPortal);
 }
 
@@ -805,23 +872,18 @@ const char* getTzString() {
   return tzString.c_str();
 }
 
-void getPreferredTeamIds(int outTeamIds[3]) {
-  outTeamIds[0] = prefTeam1;
-  outTeamIds[1] = prefTeam2;
-  outTeamIds[2] = prefTeam3;
-}
+bool isManualMode() { return manualMode; }
+void setManualMode(bool on) { manualMode = on; }
+int  getManualHomeScore()   { return manualHomeScore; }
+int  getManualAwayScore()   { return manualAwayScore; }
+int  getManualInning()      { return manualInning; }
+bool getManualTopOfInning() { return manualTopOfInning; }
+int  getManualBalls()       { return manualBalls; }
+int  getManualStrikes()     { return manualStrikes; }
+int  getManualOuts()        { return manualOuts; }
 
-
-void startNetworkServices(const NetworkBranding& branding,
-                          const NetworkTeamOption* teamOptions,
-                          size_t teamOptionCount,
-                          const int defaultPreferredTeams[3]) {
+void startNetworkServices(const NetworkBranding& branding) {
   netBranding = branding;
-  netTeamOptions = teamOptions;
-  netTeamOptionCount = teamOptionCount;
-  netDefaultTeams[0] = defaultPreferredTeams[0];
-  netDefaultTeams[1] = defaultPreferredTeams[1];
-  netDefaultTeams[2] = defaultPreferredTeams[2];
   deviceHostname = branding.hostname;
   apSsid = branding.apSsid;
   networkTaskStartedAt = millis();
@@ -837,7 +899,9 @@ void startNetworkServices(const NetworkBranding& branding,
   String macAddress = WiFi.macAddress();
   macAddress.replace(":", "");
   if (macAddress.length() >= 5) {
-    deviceHostname = "scoreboard-" + macAddress.substring(macAddress.length() - 5);
+    // Per-device hostname off the branding base (e.g. "baseball-scoreboard-ab12c")
+    deviceHostname = String(branding.hostname) + "-" +
+                     macAddress.substring(macAddress.length() - 5);
     deviceHostname.toLowerCase();
   }
   WiFi.setHostname(deviceHostname.c_str());

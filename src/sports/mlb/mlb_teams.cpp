@@ -1,64 +1,42 @@
 #include "mlb_teams.h"
 
 const MlbTeam MLB_TEAM_TABLE[] = {
-  {0,   "",    "-- None --"},
-  {108, "LAA", "Los Angeles Angels (LAA)"},
-  {109, "ARI", "Arizona Diamondbacks (ARI)"},
-  {110, "BAL", "Baltimore Orioles (BAL)"},
-  {111, "BOS", "Boston Red Sox (BOS)"},
-  {112, "CHC", "Chicago Cubs (CHC)"},
-  {113, "CIN", "Cincinnati Reds (CIN)"},
-  {114, "CLE", "Cleveland Guardians (CLE)"},
-  {115, "COL", "Colorado Rockies (COL)"},
-  {116, "DET", "Detroit Tigers (DET)"},
-  {117, "HOU", "Houston Astros (HOU)"},
-  {118, "KC",  "Kansas City Royals (KC)"},
-  {119, "LAD", "Los Angeles Dodgers (LAD)"},
-  {120, "WSH", "Washington Nationals (WSH)"},
-  {121, "NYM", "New York Mets (NYM)"},
-  {133, "OAK", "Oakland Athletics (ATH)"},
-  {134, "PIT", "Pittsburgh Pirates (PIT)"},
-  {135, "SD",  "San Diego Padres (SD)"},
-  {136, "SEA", "Seattle Mariners (SEA)"},
-  {137, "SF",  "San Francisco Giants (SF)"},
-  {138, "STL", "St. Louis Cardinals (STL)"},
-  {139, "TB",  "Tampa Bay Rays (TB)"},
-  {140, "TEX", "Texas Rangers (TEX)"},
-  {141, "TOR", "Toronto Blue Jays (TOR)"},
-  {142, "MIN", "Minnesota Twins (MIN)"},
-  {143, "PHI", "Philadelphia Phillies (PHI)"},
-  {144, "ATL", "Atlanta Braves (ATL)"},
-  {145, "CWS", "Chicago White Sox (CWS)"},
-  {146, "MIA", "Miami Marlins (MIA)"},
-  {147, "NYY", "New York Yankees (NYY)"},
-  {158, "MIL", "Milwaukee Brewers (MIL)"},
+  {108, "LAA"},
+  {109, "ARI"},
+  {110, "BAL"},
+  {111, "BOS"},
+  {112, "CHC"},
+  {113, "CIN"},
+  {114, "CLE"},
+  {115, "COL"},
+  {116, "DET"},
+  {117, "HOU"},
+  {118, "KC"},
+  {119, "LAD"},
+  {120, "WSH"},
+  {121, "NYM"},
+  {133, "OAK"},
+  {134, "PIT"},
+  {135, "SD"},
+  {136, "SEA"},
+  {137, "SF"},
+  {138, "STL"},
+  {139, "TB"},
+  {140, "TEX"},
+  {141, "TOR"},
+  {142, "MIN"},
+  {143, "PHI"},
+  {144, "ATL"},
+  {145, "CWS"},
+  {146, "MIA"},
+  {147, "NYY"},
+  {158, "MIL"},
 };
 const size_t MLB_TEAM_TABLE_COUNT = sizeof(MLB_TEAM_TABLE) / sizeof(MLB_TEAM_TABLE[0]);
 
-const int MLB_DEFAULT_PREFERRED_TEAMS[3] = {143, 144, 111};  // PHI, ATL, BOS
-
 const char* mlbTeamAbbrev(int id, const char* fallbackStr) {
   for (size_t i = 0; i < MLB_TEAM_TABLE_COUNT; ++i) {
-    if (MLB_TEAM_TABLE[i].id == id) {
-      // Entry 0 is the "-- None --" placeholder; it carries no abbrev.
-      if (MLB_TEAM_TABLE[i].abbrev[0] != '\0') return MLB_TEAM_TABLE[i].abbrev;
-      break;
-    }
+    if (MLB_TEAM_TABLE[i].id == id) return MLB_TEAM_TABLE[i].abbrev;
   }
   return (fallbackStr && strlen(fallbackStr) > 0) ? fallbackStr : "MLB";
-}
-
-const NetworkTeamOption* mlbTeamOptions(size_t& count) {
-  // Built once on first use (boot-time, not a render path).
-  static NetworkTeamOption options[MLB_TEAM_TABLE_COUNT];
-  static bool built = false;
-  if (!built) {
-    for (size_t i = 0; i < MLB_TEAM_TABLE_COUNT; ++i) {
-      options[i].id = MLB_TEAM_TABLE[i].id;
-      options[i].label = MLB_TEAM_TABLE[i].label;
-    }
-    built = true;
-  }
-  count = MLB_TEAM_TABLE_COUNT;
-  return options;
 }

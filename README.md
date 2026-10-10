@@ -1,13 +1,18 @@
-# mlb_scoreboard
+# Baseball Scoreboard
 
-ESP32-S3 firmware for a mini MLB scoreboard: 2.0" ST7789 TFT (320×240),
-2× MAX7219 8×8 score matrices, and 7 balls/strikes/outs LEDs. Live
-linescore for your preferred teams, upcoming-game countdowns, an MLB news
-ticker, an over-the-air captive-portal setup page, and GitHub-hosted
-firmware self-update.
+ESP32-S3 firmware for a mini baseball scoreboard: 2.0" ST7789 TFT
+(320×240), 2× MAX7219 8×8 score matrices, and 7 balls/strikes/outs LEDs.
+It follows the first live game on today's slate (live linescore, at-bat
+results, around-the-league ticker), shows the local time as an idle clock
+when no game is live, and has a full **manual mode** — inning, top/bottom,
+scores, and balls/strikes/outs driven from a web page. Setup (Wi-Fi,
+timezone, clock toggle) happens through an over-the-air captive portal,
+and the board self-updates its firmware from this repo's `releases/`
+folder. (The repo/GitHub name remains `mlb_scoreboard`; the feed is MLB's
+statsapi.)
 
 The repo is also a **sport scoreboard template**: the generic framework
-(`src/common/` + `src/main.cpp`) is sport-agnostic, and everything MLB
+(`src/common/` + `src/main.cpp`) is sport-agnostic, and everything baseball
 lives in `src/sports/mlb/`. See *Starting a new sport* below.
 
 ## Architecture
@@ -16,7 +21,7 @@ lives in `src/sports/mlb/`. See *Starting a new sport* below.
 ┌─────────────────────────── core 1 (Arduino loop) ──────────────────────┐
 │ main.cpp (generic shell)      sports/mlb/mlb_app.cpp + renderers       │
 │  boot / OTA screen /          WAITING↔LIVE state machine,             │
-│  boot status / NTP sync  ──▶  linescore, carousel, news ticker        │
+│  boot status / NTP sync  ──▶  linescore, ticker, manual mode          │
 │                               │ takes POD snapshots                   │
 └───────────────────────────────┼────────────────────────────────────────┘
                                 │ SnapshotChannel<T> (lock-free, gen ctr)
@@ -49,7 +54,7 @@ is a folder under `src/sports/` that implements the `sport::` contract
 2. **Copy `src/sports/mlb` → `src/sports/<sport>`** and rewrite the sport:
    - `sport_config.h` — pins/panel geometry, branding (AP SSID, hostname,
      portal title), UI theme colors, feed poll cadences.
-   - `mlb_teams.*` — the league's team table `{id, abbrev, label}`.
+   - `mlb_teams.*` — the league's team table `{id, abbrev}`.
    - `mlb_snapshot.h` — your live-game POD structs (MLB's carries
      balls/strikes/outs and base runners; hockey might carry period,
      shots, power play…).
@@ -74,6 +79,5 @@ is a folder under `src/sports/` that implements the `sport::` contract
 5. Build, USB-flash, walk through the setup portal, and run a live-game
    session against your feed.
 
-Notes for the port: NVS keys (`ssid`, `team1..3`, `show_clock`) are shared
-by design so a re-purposed board keeps its Wi-Fi; team ids are league-local,
-so clear/re-pick teams in the portal after re-flashing a board.
+Notes for the port: the NVS `ssid`/`show_clock` keys are shared by design
+so a re-purposed board keeps its Wi-Fi.

@@ -33,9 +33,7 @@ void setup() {
   // behind the logo. loop() enforces the minimum splash time instead, so
   // a fast Wi-Fi handshake can't cut the logo short.
   NetworkBranding branding = sport::branding();
-  size_t teamOptionCount = 0;
-  startNetworkServices(branding, sport::teamOptions(teamOptionCount),
-                       teamOptionCount, sport::defaultPreferredTeams());
+  startNetworkServices(branding);
   startNetworkTask();
   sport::startDataTask();  // core-0 feed fetches
 

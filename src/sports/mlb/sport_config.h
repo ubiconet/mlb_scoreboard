@@ -43,8 +43,8 @@ static const int OUT_2_PIN = 6;
 static const int OUT_1_PIN = 7;
 
 // ---- Branding (AP network name, hostname, portal title) ---------------------
-static const char* NETWORK_AP_SSID = "MLB_SCOREBOARD";
-static const char* NETWORK_HOSTNAME = "mlb-scoreboard";
+static const char* NETWORK_AP_SSID = "BASEBALL_SCOREBOARD";
+static const char* NETWORK_HOSTNAME = "baseball-scoreboard";
 
 // ---- UI theme (RGB565) -------------------------------------------------------
 // Shared by the sport renderer AND the generic boot/OTA screens (they include
@@ -71,14 +71,3 @@ static const uint32_t MLB_NTP_READY_RETRY_MS = 5000;     // short retry while aw
 static const uint32_t MLB_POSTGAME_GRACE_MS = 300000;    // Keep final followed game visible for 5 min
 static const uint32_t MLB_AT_BAT_RESULT_DISPLAY_MS = 5000; // Full-screen result card duration
 static const uint32_t MLB_CAROUSEL_ROTATE_MS = 5000;      // Rotate live-game stat ticker every 5s
-static const uint32_t MLB_UPCOMING_GAMES_ROTATE_MS = 5000;  // Show each upcoming-game card for 5s
-// News ticker pacing — LED-marquee style. The bit-banged bus can't push
-// the window fast enough for clean continuous motion (any continuous
-// scroll tears by speed x push time, ~14 px at best), so the ticker
-// advances one whole character cell (24 px) per step and holds between
-// steps, like a physical LED sign: the display is perfectly static except
-// for a brief tick every MLB_NEWS_TICKER_STEP_MS. 200 ms/step averages
-// ~80 px/s. Smaller = faster, larger = slower.
-static const uint32_t MLB_NEWS_TICKER_STEP_MS = 200;   // ms per 24-px character step
-static const uint32_t MLB_NEWS_CACHE_TTL_MS = 30UL * 60UL * 1000UL; // Refresh ESPN news every 30 min
-static const uint32_t MLB_NEWS_RETRY_MS     = 60UL * 1000UL;       // Retry failed news fetch every 60s until first success. Keep this gentle: ESPN's edge starts rejecting TLS handshakes (fatal alerts) from clients that retry every few seconds.

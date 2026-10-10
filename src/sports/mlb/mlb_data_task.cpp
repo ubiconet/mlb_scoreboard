@@ -5,32 +5,17 @@
 
 #include "config.h"
 #include "common/comms/http_fetcher.h"
-#include "common/data/time_util.h"
 #include "common/comms/network_service.h"
 #include "common/comms/ota_update.h"
 #include "mlb_client.h"
 #include "mlb_snapshot.h"
 #include "mlb_state.h"
-#include "mlb_renderer.h"
 
 namespace {
-
-// The publisher functions live at global scope in scoreboard.cpp (namespace
-// mlb_data::). They're declared in mlb_state.h
-// via the take* helpers, and we just call them by qualified name here.
 
 // JSON workspace on core 0. Each API routine clears it before beginning a
 // subsequent HTTPS request, so a previous response does not crowd TLS buffers.
 JsonDocument mlbDoc;
-
-// News cache: only refresh every MLB_NEWS_CACHE_TTL_MS so the scoreboard
-// doesn't hammer ESPN's news endpoint on every waiting-mode cycle. Stories are
-// published into the renderer-owned newsStories[] slots declared in mlb_renderer.h.
-uint32_t gLastNewsFetchAt    = 0;
-uint32_t gLastNewsAttemptAt  = 0;  // most recent attempt (success or fail) for failed-retry throttle
-uint32_t gLastNewsAppliedAt  = 0;
-uint32_t gNewsRetryInterval  = MLB_NEWS_RETRY_MS;  // doubles per consecutive failure
-NewsStory gCachedNews[MAX_NEWS_STORIES];
 
 const char* inningStateCode(const char* state) {
   if (strcmp(state, "Top") == 0)    return "Top";
@@ -183,39 +168,11 @@ bool fetchScheduleSnapshot(ScheduleSnapshot& out) {
   // Bump the attempt counter immediately so the renderer can see the data
   // task is alive even when every fetch fails.
   bumpScheduleFetchAttempt();
-  // Build a 3-day forward window so findNextGame() can locate the *next*
-  // game for each preferred team, even when none of them play today. When
-  // NTP hasn't synced yet (epoch < 2024-01-01), fall back to the firmware's
-  // __DATE__ as the start of the window so the carousel still has games on a
-  // fresh boot.
-  char startDate[11] = {};
-  char endDate[11]   = {};
-  time_t nowEpoch = time(nullptr);
-  bool ntpReady = timeIsSynced();
-
-  const int SCHEDULE_LOOKAHEAD_DAYS = 3;
-
-  tm startTm = {};
-  if (ntpReady) {
-    localtime_r(&nowEpoch, &startTm);
-  } else if (!parseCompileDate(__DATE__, startTm)) {
-    setScheduleLastError("date_parse_failed");
-    return false;
-  }
-  tm endTm = startTm;
-  endTm.tm_mday += SCHEDULE_LOOKAHEAD_DAYS - 1;
-  mktime(&endTm);
-  if (strftime(startDate, sizeof(startDate), "%Y-%m-%d", &startTm) == 0 ||
-      strftime(endDate,   sizeof(endDate),   "%Y-%m-%d", &endTm)   == 0) {
-    setScheduleLastError("strftime_failed");
-    return false;
-  }
-
-  int preferredTeams[3];
-  getPreferredTeamIds(preferredTeams);
-
-  // Fetch 1: today's full slate (a few KB with hydrate=linescore) for the
-  // other-live-games ticker and live-game detection.
+  // Today's full slate (a few KB with hydrate=linescore) for live-game
+  // detection and the around-the-league ticker. A null date asks the
+  // server for "today" so the device never needs its own clock; a day
+  // with no games parses fine and leaves the list empty — that's a
+  // successful fetch, not a failure.
   if (!fetchMlbSchedule(nullptr, mlbDoc)) {
     setScheduleLastError("today_fetch_failed");
     return false;
@@ -223,93 +180,11 @@ bool fetchScheduleSnapshot(ScheduleSnapshot& out) {
   copyOtherGames(mlbDoc.as<JsonObjectConst>(), out);
   mlbDoc.clear();
 
-  // Fetch 2: 3-day window for just the preferred teams (~2 KB with the
-  // server-side teamId filter) for the renderer's upcoming-games carousel.
-  // A 3-day full-slate body (~13 KB) cannot be buffered while the TLS
-  // session is open on this heap, which is why the two are separate calls.
-  bool rangeOk =
-      fetchMlbScheduleRange(startDate, endDate, mlbDoc, preferredTeams);
-  if (rangeOk) {
-    publishUpcomingScheduleJson(mlbDoc.as<JsonObjectConst>());
-    mlbDoc.clear();
-  } else {
-    setScheduleLastError("range_fetch_failed");
-  }
-
   bumpScheduleFetchSuccess();
-  if (rangeOk) {
-    setScheduleLastError("ok");
-  }
-  DBG_PRINTF("[SCHED] fetched OK on attempt %u (range %s)\n",
-             (unsigned)getScheduleFetchSuccesses(),
-             rangeOk ? "ok" : "failed");
+  setScheduleLastError("ok");
+  DBG_PRINTF("[SCHED] fetched OK on attempt %u\n",
+             (unsigned)getScheduleFetchSuccesses());
   return out.valid;
-}
-
-// News fetch is throttled: only hit ESPN every MLB_NEWS_CACHE_TTL_MS once we
-// have a successful fetch in cache, but a cold cache (first boot) fetches
-// immediately so the carousel isn't empty. We throttle *failed* retries to
-// MLB_NEWS_RETRY_MS (default 15 s) so a fresh boot that's still associating
-// with WiFi keeps retrying every 15 s instead of locking itself out for the
-// full 30-min cache TTL.
-// (An earlier revision had a "force refresh" flag here that the data task set
-// itself after a successful fetch and consumed on the next 50 ms tick,
-// re-fetching ESPN in a tight loop forever. The renderer is updated directly
-// through publishNewsStory()/setNewsStoryCount(), so no flag is needed.)
-void fetchNewsSnapshotIfDue() {
-  uint32_t now = millis();
-  bool fresh       = (gLastNewsFetchAt != 0 &&
-                      (now - gLastNewsFetchAt) < MLB_NEWS_CACHE_TTL_MS);
-  bool retryThrottled = (gLastNewsFetchAt == 0 &&
-                         gLastNewsAttemptAt != 0 &&
-                         (now - gLastNewsAttemptAt) < gNewsRetryInterval);
-  if (fresh || retryThrottled) {
-    return;
-  }
-  gLastNewsAttemptAt = now;
-  if (!fetchEspnMlbNews(mlbDoc)) {
-    // Exponential backoff on consecutive failures: retrying every few
-    // seconds against a network that is refusing TLS connections makes
-    // flood protection worse, never better.
-    gNewsRetryInterval = (gNewsRetryInterval * 2 > MLB_RETRY_BACKOFF_MAX_MS)
-                             ? MLB_RETRY_BACKOFF_MAX_MS
-                             : gNewsRetryInterval * 2;
-    DBG_PRINTF("[NEWS] fetch failed; serving cached (%u stories); retry in %lu s\n",
-               (unsigned)getNewsStoryCount(),
-               (unsigned long)(gNewsRetryInterval / 1000UL));
-    return;
-  }
-  gNewsRetryInterval = MLB_NEWS_RETRY_MS;
-  gLastNewsFetchAt = now;
-  size_t count = 0;
-  for (JsonObjectConst article : mlbDoc["articles"].as<JsonArrayConst>()) {
-    if (count >= MAX_NEWS_STORIES) break;
-    const char* h = article["headline"] | "";
-    if (h[0] == '\0') continue;
-    strlcpy(gCachedNews[count].headline, h, sizeof(gCachedNews[count].headline));
-    strlcpy(gCachedNews[count].description,
-            article["description"] | "",
-            sizeof(gCachedNews[count].description));
-    count++;
-  }
-  if (count == 0) {
-    mlbDoc.clear();
-    return;
-  }
-  // Publish into the renderer-owned slots via the setter API.
-  for (size_t i = 0; i < count; ++i) {
-    NewsSlotUpdate slot;
-    slot.index = i;
-    strlcpy(slot.headline,    gCachedNews[i].headline,    sizeof(slot.headline));
-    strlcpy(slot.description, gCachedNews[i].description, sizeof(slot.description));
-    publishNewsStory(slot);
-  }
-  setNewsStoryCount(count);  // also resets newsStoryIndex to 0
-  gLastNewsAppliedAt = now;
-  mlbDoc.clear();
-  DBG_PRINTF("[NEWS] cache refreshed: %u stories; next refresh in %lu min\n",
-             (unsigned)count,
-             (unsigned long)(MLB_NEWS_CACHE_TTL_MS / 60000UL));
 }
 
 void mlbDataTaskLoop(void*) {
@@ -365,12 +240,6 @@ void mlbDataTaskLoop(void*) {
 
       uint32_t now = millis();
 
-      // News: cache TTL-gated, with exponential failure backoff. Runs FIRST
-      // so the boot-time attempt lands while the heap is pristine (ESPN's
-      // cert chain needs larger allocations than statsapi's) and before the
-      // statsapi session is opened; fetchEspnMlbNews closes that session
-      // itself so the two TLS contexts never coexist on this heap.
-      fetchNewsSnapshotIfDue();
       // Schedule: refresh ~once a minute after a successful fetch. While the
       // last fetch failed, retry after scheduleRetryInterval, which doubles
       // per consecutive failure (capped) — hammering a network that is
@@ -417,7 +286,7 @@ void mlbDataTaskLoop(void*) {
       // between ticks. The install's network path refuses new TCP flows
       // from this device after a burst of connections, so reusing one
       // session across refreshes (and across the 5 s live polls during a
-      // game) is what keeps the feeds alive. fetchEspnMlbNews closes it
+      // game) is what keeps the feeds alive. The OTA updater closes it
       // before its own connection; the next statsapi fetch reopens it.
     }
     vTaskDelay(pdMS_TO_TICKS(50));
@@ -427,11 +296,6 @@ void mlbDataTaskLoop(void*) {
 } // namespace
 
 void startMlbDataTask() {
-  // Don't pre-prime news here — at this point WiFi is still associating
-  // and the synchronous fetch returns HTTP -1 immediately, then the 30-min
-  // cache TTL locks out retries for the rest of the session. The spawned
-  // loop below will naturally retry news every ~30 s until the first
-  // success, so the carousel gets populated as soon as WiFi is up.
   xTaskCreatePinnedToCore(mlbDataTaskLoop, "MlbData", 12288,
                           nullptr, 1, nullptr, 0);
 }

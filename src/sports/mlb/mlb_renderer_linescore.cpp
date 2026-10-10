@@ -3,10 +3,12 @@
 #include <Adafruit_ST7789.h>
 
 #include "config.h"
+#include "common/comms/network_service.h"
 #include "common/data/time_util.h"
 #include "common/hal/count_leds.h"
 #include "common/hal/led_matrix.h"
 #include "common/hal/tft_panel.h"
+#include "common/ui/boot_splash.h"
 #include "common/ui/gfx.h"
 #include "mlb_renderer.h"
 #include "mlb_renderer_internal.h"
@@ -61,6 +63,15 @@ struct RenderedFrame {
 RenderedFrame gRendered{};
 bool gHasRendered = false;
 
+// Manual-mode output cache — mirrors RenderedFrame's role for the
+// portal-driven manual screen (TFT splash + matrices + count LEDs).
+struct ManualDrawn {
+  bool drawn = false;
+  int awayScore = -1, homeScore = -1;
+  int balls = -1, strikes = -1, outs = -1;
+};
+ManualDrawn md;
+
 // 5x7 Dot Matrix Font table for digits 0-9
 const uint8_t LED_DIGIT_5X7[10][7] = {
   {0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110}, // 0
@@ -105,6 +116,9 @@ const char* shortInningState(const char* state) {
 void drawLedDigit(Adafruit_GFX& target, int startX, int startY, int digit) {
   if (digit < 0 || digit > 9) return;
   const int spacing = 8;
+  // Lit dots are radius 4 at 8-px spacing, so adjacent lit dots touch and
+  // every stroke reads as a solid 2-dot-wide bar (the "bold" look); unlit
+  // dots stay tiny so the dot-grid texture survives between strokes.
   for (int row = 0; row < 7; row++) {
     uint8_t line = LED_DIGIT_5X7[digit][row];
     for (int col = 0; col < 5; col++) {
@@ -112,7 +126,7 @@ void drawLedDigit(Adafruit_GFX& target, int startX, int startY, int digit) {
       int cy = startY + (row * spacing);
       bool active = (line & (1 << (4 - col))) != 0;
       if (active) {
-        target.fillCircle(cx, cy, 3, COLOR_LED_RED);
+        target.fillCircle(cx, cy, 4, COLOR_LED_RED);
       } else {
         target.fillCircle(cx, cy, 1, COLOR_LED_OFF);
       }
@@ -248,11 +262,11 @@ void drawBottomPanel(Adafruit_GFX& target, const LinescoreSnapshot& ls) {
   target.drawRoundRect(8, 108, 304, 124, 6, ST77XX_WHITE);
 
   // Fixed row: current batter (left) and current pitcher (right)
-  target.setTextSize(1);
+  target.setTextSize(2);
   target.setTextColor(COLOR_GOLD);
-  target.setCursor(18, 116);
+  target.setCursor(18, 114);
   target.print("AT BAT");
-  target.setCursor(166, 116);
+  target.setCursor(166, 114);
   target.print("PITCHING");
   target.drawLine(161, 112, 161, 158, COLOR_MUTED);
 
@@ -269,14 +283,14 @@ void drawBottomPanel(Adafruit_GFX& target, const LinescoreSnapshot& ls) {
 
   if (tickerSlide == 0) {
     // Lineup context: on deck (large), in the hole + catcher (compact)
-    target.setTextSize(1);
+    target.setTextSize(2);
     target.setTextColor(COLOR_GOLD);
-    target.setCursor(18, 168);
+    target.setCursor(18, 165);
     target.print("ON DECK");
 
     target.setTextColor(ST77XX_WHITE);
     target.setTextSize(2);
-    target.setCursor(18, 182);
+    target.setCursor(18, 183);
     printClipped(target, ls.onDeck[0] ? ls.onDeck : "--", 23);
 
     char line[64];
@@ -508,6 +522,42 @@ void resetAtBatResultDisplay() {
 }
 
 bool isAtBatResultVisible() { return atBatResultVisible; }
+
+void invalidateManualScreen() { md = ManualDrawn{}; }
+
+void renderManual(int logoWidth, int logoHeight, const uint16_t* logoPixels) {
+  // TFT: the scoreboard splash screen owns the panel for the whole manual
+  // session (static artwork + firmware version — one repaint on entry).
+  if (!md.drawn) {
+    md.drawn = true;
+    renderBootSplash(logoWidth, logoHeight, logoPixels);
+  }
+
+  // Hardware outputs (scores + 7 count LEDs) update independently of the
+  // cached frame, exactly like the live screen's always-update path.
+  int hs = getManualHomeScore(), as = getManualAwayScore();
+  if (hs != md.homeScore || as != md.awayScore) {
+    md.homeScore = hs;
+    md.awayScore = as;
+    setMax7219Scores(as, hs);
+  }
+  int b = getManualBalls(), s = getManualStrikes(), o = getManualOuts();
+  if (b != md.balls || s != md.strikes || o != md.outs) {
+    md.balls = b;
+    md.strikes = s;
+    md.outs = o;
+    setCountLeds(b, s, o);
+  }
+}
+
+void forceLiveRepaint() {
+  if (!mlb_render::hasCurrentLiveGame ||
+      !mlb_render::currentLinescore.valid) {
+    return;
+  }
+  gHasRendered = false;  // dirty-rect tracker: repaint everything
+  renderLinescore(mlb_render::currentLinescore);
+}
 
 void renderLinescore(const LinescoreSnapshot& ls) {
   mlb_render::currentLinescore    = ls;

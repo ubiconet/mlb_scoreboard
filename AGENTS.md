@@ -41,8 +41,8 @@ src/
 │   ├── hal/              # tft_panel (panel + canvas + pushes), led_matrix
 │   │                     #   (MAX7219), count_leds (7 counter LEDs)
 │   ├── comms/            # http_fetcher (keep-alive HTTP + buffered parse),
-│   │                     #   network_service (Wi-Fi/portal/NVS, branding +
-│   │                     #   team options injected), ota_update
+│   │                     #   network_service (Wi-Fi/portal/NVS, branding
+│   │                     #   injected), ota_update
 │   ├── data/             # snapshot_channel.h (cross-core mailbox template),
 │   │                     #   time_util (NTP/ISO-8601 helpers)
 │   └── ui/               # gfx helpers, QR, boot splash/status, OTA screen
@@ -53,9 +53,9 @@ src/
         ├── mlb_app.cpp     # WAITING/LIVE state machine + sport:: contract
         ├── mlb_renderer_linescore.cpp / _waiting.cpp / mlb_renderer_internal.h
         ├── mlb_logos.*     # logo RAM cache + draw helpers
-        ├── mlb_state.*     # snapshot channels, activeGamePk, schedule cache,
+        ├── mlb_state.*     # snapshot channels, activeGamePk,
         │                   #   fetch diagnostics
-        ├── mlb_teams.*     # ONE team table {id, abbrev, label}
+        ├── mlb_teams.*     # ONE team table {id, abbrev}
         ├── mlb_client.*    # feed endpoints + JSON filters (uses http_fetch)
         ├── mlb_data_task.cpp # core-0 fetch/publish loop
         ├── mlb_snapshot.h    # POD snapshot structs (the core0→core1 contract)
@@ -79,12 +79,23 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
 - **Core 1 (Arduino `loop()`):** pure display. The generic shell handles
   boot/update/network screens, then calls `sport::tick()`; the sport renders
   from POD snapshots via `take*Snapshot()`. No HTTP on this core.
+- **Manual mode (v2.61):** the setup portal's "Manual Mode" page
+  (`/manual`, handlers + volatile state in `common/comms/network_service`,
+  same pattern as the NHL scoreboard) fully overrides the display: the TFT
+  shows the boot splash, the matrices show portal-set scores, and the count
+  LEDs follow portal-set balls/strikes/outs (inning + top/bottom are held
+  in state). `mlb_app.cpp`'s tick short-circuits into
+  `renderManual()` while active and repaints the previous screen on exit.
 - **Core 0 (FreeRTOS tasks):** the network task (portal/DNS/ArduinoOTA,
   priority 2) and the MLB data task (`sports/mlb/mlb_data_task.cpp`,
   priority 1) do all API calls, JSON parsing, and snapshot publishing.
-- **Carousel/news/news ticker:** cached for **30 minutes**
-  (`MLB_NEWS_CACHE_TTL_MS` in `src/sports/mlb/sport_config.h`). News API is
-  hit at most once per 30 min, not on every waiting-mode cycle.
+- **Game selection (v2.62):** no team preferences — the board follows the
+  FIRST live game on today's slate (schedule order = start-time order) and
+  rolls to the next live game when it ends. The setup portal configures
+  Wi-Fi, timezone, and the idle-clock toggle only. The ESPN news feed,
+  team selection, and the upcoming-games carousel that used to exist were
+  removed in v2.62; waiting mode shows a standby screen with schedule
+  diagnostics.
 
 ---
 
@@ -269,15 +280,14 @@ After any non-trivial change:
    errors. Warnings about unused variables/functions are okay but should
    be addressed before bumping the firmware version. Also sanity-check
    flash size against the 1.5 MB OTA partition (the build prints the
-   percentage; v2.60 sits ~91.2%).
+   percentage; v2.63 sits ~90.4%).
 2. Upload to the device (OTA or USB).
 3. Confirm via Serial Monitor (with `-DSB_DEBUG=1`) or the on-screen
    diagnostics that:
    - The boot splash shows the new version string.
-   - The waiting screen, when no preferred team is live, shows the
-     diagnostic line `sched:NB Ndates Ngames Ns ago` on the "no upcoming
-     games" page — this confirms the data task is publishing schedule
-     JSON.
+   - The waiting standby screen, when no game is live, shows the
+     diagnostic line `sched att:N ok:M err:ok http:200` — this confirms
+     the data task is fetching the schedule.
    - The MAX7219 matrices still show the live time when the device is
      in waiting mode (hour on home, minute on away).
    - Count LEDs (balls/strikes/outs) update during a live game.
@@ -286,21 +296,20 @@ After any non-trivial change:
 
 ## 6. Things to avoid (lessons learned)
 
-- **Don't switch to hardware SPI for the ST7789.** The 5-arg software
+- **Don't switch to hardware SPI for the ST7789.** (Also: never include
+  `boot_logo.h` from two TUs — the 80 KB logo array is emitted once per
+  including TU; pass the logo through like `renderManual()` does.) The 5-arg software
   SPI constructor is the proven-working configuration. See
   `src/common/hal/tft_panel.h` and
   `memories/repo/hardware_architecture.md` for the full story.
 - **Don't block in `loop()`/`sport::tick()`.** Every API call belongs on
   core 0.
-- **Don't keep large `JsonDocument`s on the render core.** The renderer
-  only carries the small schedule cache in `mlb_state.cpp` (used by
-  `findNextGame()`) — keep it that way.
+- **Don't keep `JsonDocument`s on the render core.** Since the v2.62
+  carousel removal the render core carries no JSON at all — keep it that
+  way.
 - **Don't remove the dirty-rect tracking in `renderLinescore()`.**
   Without it the live screen flickers visibly on every 5 s linescore
   poll.
-- **Don't change the news cache TTL below 5 minutes.** The ESPN endpoint
-  is fine with 30 min; sub-5-min hammering is wasteful and may get
-  rate-limited.
 - **Don't open a second TLS connection while one is alive.** The OTA
   updater reuses one session for manifest + binary on purpose; the feed
   client closes its keep-alive session (`http_fetch::closeSession()`)
@@ -320,7 +329,7 @@ memory. The current file `hardware_architecture.md` covers:
 
 - Pin assignments
 - MLB API integration details (TLS heap churn, fields-filter gotchas,
-  standings/news carousel)
+  standings carousel)
 - The ST7789 SPI pin gotcha (DO NOT switch to hardware SPI)
 - Performance notes (debug-flag, dirty-rect, sprite pre-rasterization,
   logo cache)

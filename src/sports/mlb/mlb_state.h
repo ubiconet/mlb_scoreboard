@@ -6,10 +6,10 @@
 #include "mlb_snapshot.h"
 
 // Cross-core state for the MLB app: the three feed snapshot channels, the
-// active-game selector, the renderer's schedule-JSON cache, and the
-// schedule-fetch diagnostics shown on the "no upcoming games" screen.
-// Writers: core-0 data task (publish*/bump/set-diagnostics) and the main
-// loop (setActiveGamePk). Readers: render core (take*/get*).
+// active-game selector, and the schedule-fetch diagnostics shown on the
+// waiting-mode standby screen. Writers: core-0 data task
+// (publish*/bump/set-diagnostics) and the main loop (setActiveGamePk).
+// Readers: render core (take*/get*).
 
 // Copies the current snapshot into `out` only if a new generation has been
 // published since the caller's last sample. Returns true when a fresh (and
@@ -29,13 +29,6 @@ void publishSchedule(const ScheduleSnapshot& s);
 // 0 means "no game followed / waiting mode".
 int  getActiveGamePk();
 void setActiveGamePk(int gamePk);
-
-// Schedule JSON cache used by the renderer's waiting carousel. The data task
-// on core 0 republishes this whenever a fresh schedule fetch completes.
-void publishUpcomingScheduleJson(JsonObjectConst src);
-JsonObjectConst getUpcomingScheduleJson();
-uint32_t getUpcomingSchedulePublishedAt();   // millis() of last publish, 0 = never
-size_t    getUpcomingScheduleDocSize();      // bytes in the cached document
 
 // Diagnostic helpers for the "no upcoming games" screen. They report what
 // the data task has actually published so we can tell at a glance whether
