@@ -118,34 +118,40 @@ void copyPlaySnapshot(JsonObjectConst src, PlaySnapshot& dst) {
   dst.valid = true;
 }
 
-void copyOtherGames(JsonObjectConst scheduleRoot, ScheduleSnapshot& dst) {
+void copySchedule(JsonObjectConst scheduleRoot, ScheduleSnapshot& dst) {
   memset(&dst, 0, sizeof(dst));
   JsonArrayConst dates = scheduleRoot["dates"].as<JsonArrayConst>();
   if (dates.isNull() || dates.size() == 0) return;
-  JsonArrayConst games = dates[0]["games"].as<JsonArrayConst>();
-  if (games.isNull()) return;
 
-  for (JsonObjectConst game : games) {
-    if (dst.otherCount >= 9) break;
-    const char* state = game["status"]["abstractGameState"] | "";
-    if (strcmp(state, "Live") != 0) continue;
-    OtherGameLite& slot = dst.others[dst.otherCount++];
-    slot.gamePk      = game["gamePk"] | 0;
-    int awayTeamId = game["teams"]["away"]["team"]["id"] | 0;
-    int homeTeamId = game["teams"]["home"]["team"]["id"] | 0;
-    // Store team-id digits in the abbrev fields as a placeholder; the
-    // renderer's updateOtherGames() runs getTeamAbbrev() to resolve the
-    // canonical abbreviation at read time.
-    snprintf(slot.awayAbbrev, sizeof(slot.awayAbbrev), "%d", awayTeamId);
-    snprintf(slot.homeAbbrev, sizeof(slot.homeAbbrev), "%d", homeTeamId);
-    slot.awayScore = game["teams"]["away"]["score"] | 0;
-    slot.homeScore = game["teams"]["home"]["score"] | 0;
-    strlcpy(slot.inningState,
-            inningStateCode(game["linescore"]["inningState"] | ""),
-            sizeof(slot.inningState));
-    strlcpy(slot.inningOrdinal,
-            game["linescore"]["currentInningOrdinal"] | "",
-            sizeof(slot.inningOrdinal));
+  for (JsonObjectConst date : dates) {
+    for (JsonObjectConst game : date["games"].as<JsonArrayConst>()) {
+      const char* state = game["status"]["abstractGameState"] | "";
+      if (strcmp(state, "Live") == 0 && dst.otherCount < 9) {
+        OtherGameLite& slot = dst.others[dst.otherCount++];
+        slot.gamePk      = game["gamePk"] | 0;
+        int awayTeamId = game["teams"]["away"]["team"]["id"] | 0;
+        int homeTeamId = game["teams"]["home"]["team"]["id"] | 0;
+        // Store team-id digits in the abbrev fields as a placeholder; the
+        // renderer's updateOtherGames() resolves the canonical abbreviation.
+        snprintf(slot.awayAbbrev, sizeof(slot.awayAbbrev), "%d", awayTeamId);
+        snprintf(slot.homeAbbrev, sizeof(slot.homeAbbrev), "%d", homeTeamId);
+        slot.awayScore = game["teams"]["away"]["score"] | 0;
+        slot.homeScore = game["teams"]["home"]["score"] | 0;
+        strlcpy(slot.inningState,
+                inningStateCode(game["linescore"]["inningState"] | ""),
+                sizeof(slot.inningState));
+        strlcpy(slot.inningOrdinal,
+                game["linescore"]["currentInningOrdinal"] | "",
+                sizeof(slot.inningOrdinal));
+      } else if (!dst.upcoming.valid && strcmp(state, "Preview") == 0) {
+        dst.upcoming.gamePk = game["gamePk"] | 0;
+        dst.upcoming.awayTeamId = game["teams"]["away"]["team"]["id"] | 0;
+        dst.upcoming.homeTeamId = game["teams"]["home"]["team"]["id"] | 0;
+        strlcpy(dst.upcoming.gameDate, game["gameDate"] | "",
+                sizeof(dst.upcoming.gameDate));
+        dst.upcoming.valid = dst.upcoming.gamePk > 0;
+      }
+    }
   }
   dst.valid = true;
 }
@@ -169,15 +175,15 @@ bool fetchScheduleSnapshot(ScheduleSnapshot& out) {
   // task is alive even when every fetch fails.
   bumpScheduleFetchAttempt();
   // Today's full slate (a few KB with hydrate=linescore) for live-game
-  // detection and the around-the-league ticker. A null date asks the
-  // server for "today" so the device never needs its own clock; a day
-  // with no games parses fine and leaves the list empty — that's a
-  // successful fetch, not a failure.
+  // detection, the around-the-league ticker, and the next scheduled
+  // matchup. A null date asks the server for "today" so the device never
+  // needs its own clock. The endpoint includes every game type, including
+  // postseason; do not add a regular-season gameType filter here.
   if (!fetchMlbSchedule(nullptr, mlbDoc)) {
     setScheduleLastError("today_fetch_failed");
     return false;
   }
-  copyOtherGames(mlbDoc.as<JsonObjectConst>(), out);
+  copySchedule(mlbDoc.as<JsonObjectConst>(), out);
   mlbDoc.clear();
 
   bumpScheduleFetchSuccess();

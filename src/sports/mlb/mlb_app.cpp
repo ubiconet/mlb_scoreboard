@@ -36,6 +36,8 @@ uint32_t sLastLinescoreGen = 0;
 uint32_t sLastPlayGen      = 0;
 uint32_t sLastScheduleGen  = 0;
 uint32_t sLastScheduleRenderAt = 0;
+ScheduleSnapshot sCurrentSchedule{};
+bool sHasCurrentSchedule = false;
 
 // The data task can't decide on its own which game the board should follow.
 // We make that decision here, set activeGamePk via setActiveGamePk(), and
@@ -117,7 +119,7 @@ void tick(const SportTickContext& ctx) {
     if (scoreboardState == ScoreboardState::LIVE_GAME) {
       forceLiveRepaint();
     } else {
-      renderWaiting();
+      renderWaiting(sHasCurrentSchedule ? &sCurrentSchedule : nullptr);
       invalidateMax7219Clock();
     }
   }
@@ -129,7 +131,7 @@ void tick(const SportTickContext& ctx) {
     scoreboardState = ScoreboardState::WAITING;
     setActiveGamePk(0);
     postgameGraceStartedAt = 0;
-    renderWaiting();
+    renderWaiting(sHasCurrentSchedule ? &sCurrentSchedule : nullptr);
     logWaitingDisplayState();
   }
 
@@ -162,6 +164,8 @@ void tick(const SportTickContext& ctx) {
   // tell it. Selection follows the first live game on the slate (see
   // selectLiveGamePk); the "other games" list feeds the live ticker.
   if (newSchedule && sch.valid) {
+    sCurrentSchedule = sch;
+    sHasCurrentSchedule = true;
     int newGamePk = selectLiveGamePk(sch);
 
     updateOtherGames(sch, newGamePk);
@@ -183,7 +187,7 @@ void tick(const SportTickContext& ctx) {
     // First entry to WAITING (or schedule refresh): refresh the standby screen.
     if (sLastScheduleRenderAt == 0 || newSchedule) {
       sLastScheduleRenderAt = now;
-      renderWaiting();
+      renderWaiting(sHasCurrentSchedule ? &sCurrentSchedule : nullptr);
       logWaitingDisplayState();
     }
   } else {

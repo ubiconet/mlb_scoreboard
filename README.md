@@ -3,9 +3,11 @@
 ESP32-S3 firmware for a mini baseball scoreboard: 2.0" ST7789 TFT
 (320×240), 2× MAX7219 8×8 score matrices, and 7 balls/strikes/outs LEDs.
 It follows the first live game on today's slate (live linescore, at-bat
-results, around-the-league ticker), shows the local time as an idle clock
-when no game is live, and has a full **manual mode** — inning, top/bottom,
-scores, and balls/strikes/outs driven from a web page. Setup (Wi-Fi,
+results, around-the-league ticker), shows the next scheduled matchup and
+the local time as an idle clock when no game is live, and has a full
+**manual mode** — inning, top/bottom, scores, and balls/strikes/outs driven
+from a web page. The same MLB schedule endpoint includes regular-season and
+postseason games. Setup (Wi-Fi,
 timezone, clock toggle) happens through an over-the-air captive portal,
 and the board self-updates its firmware from this repo's `releases/`
 folder. (The repo/GitHub name remains `mlb_scoreboard`; the feed is MLB's

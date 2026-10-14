@@ -58,9 +58,18 @@ struct OtherGameLite {
   char inningOrdinal[8];
 };
 
+struct UpcomingGameLite {
+  int gamePk;
+  int awayTeamId;
+  int homeTeamId;
+  char gameDate[24];
+  bool valid;
+};
+
 struct ScheduleSnapshot {
   OtherGameLite others[9];
   size_t otherCount;
+  UpcomingGameLite upcoming;
   bool valid;
 };
 

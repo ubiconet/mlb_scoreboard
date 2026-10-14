@@ -27,12 +27,10 @@ void resetAtBatResultDisplay();
 // True while the full-screen at-bat result card owns the display.
 bool isAtBatResultVisible();
 
-// Renders the waiting state (no live game): a simple standby screen on the
-// TFT with schedule-fetch status, count LEDs dark, and the score matrices
-// released to the idle clock. The v2.62 removal of team selection also
-// removed the upcoming-games carousel and news slides that used to live
-// here.
-void renderWaiting();
+// Renders the waiting state (no live game), including the next game in the
+// current slate when available. Count LEDs are dark and score matrices are
+// released to the idle clock.
+void renderWaiting(const ScheduleSnapshot* schedule = nullptr);
 
 // Writes the current TFT, LED matrix, and discrete LED state to Serial.
 void logLiveDisplayState(const LinescoreSnapshot& linescore, int gamePk);
