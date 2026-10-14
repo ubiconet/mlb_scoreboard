@@ -35,9 +35,13 @@ bool atBatBaselineReady   = false;
 uint32_t sLastLinescoreGen = 0;
 uint32_t sLastPlayGen      = 0;
 uint32_t sLastScheduleGen  = 0;
+uint32_t sLastNewsGen = 0;
+uint32_t sLastStandingsGen = 0;
 uint32_t sLastScheduleRenderAt = 0;
 ScheduleSnapshot sCurrentSchedule{};
 bool sHasCurrentSchedule = false;
+NewsSnapshot sCurrentNews{};
+StandingsSnapshot sCurrentStandings{};
 
 // The data task can't decide on its own which game the board should follow.
 // We make that decision here, set activeGamePk via setActiveGamePk(), and
@@ -119,7 +123,8 @@ void tick(const SportTickContext& ctx) {
     if (scoreboardState == ScoreboardState::LIVE_GAME) {
       forceLiveRepaint();
     } else {
-      renderWaiting(sHasCurrentSchedule ? &sCurrentSchedule : nullptr);
+      renderWaiting(sHasCurrentSchedule ? &sCurrentSchedule : nullptr,
+                    &sCurrentNews, &sCurrentStandings);
       invalidateMax7219Clock();
     }
   }
@@ -131,7 +136,8 @@ void tick(const SportTickContext& ctx) {
     scoreboardState = ScoreboardState::WAITING;
     setActiveGamePk(0);
     postgameGraceStartedAt = 0;
-    renderWaiting(sHasCurrentSchedule ? &sCurrentSchedule : nullptr);
+    renderWaiting(sHasCurrentSchedule ? &sCurrentSchedule : nullptr,
+                  &sCurrentNews, &sCurrentStandings);
     logWaitingDisplayState();
   }
 
@@ -157,6 +163,12 @@ void tick(const SportTickContext& ctx) {
   // ---- Consume new schedule snapshot ----
   ScheduleSnapshot sch{};
   bool newSchedule = takeScheduleSnapshot(sch, sLastScheduleGen);
+  NewsSnapshot news{};
+  bool newNews = takeNewsSnapshot(news, sLastNewsGen);
+  StandingsSnapshot standings{};
+  bool newStandings = takeStandingsSnapshot(standings, sLastStandingsGen);
+  if (newNews && news.valid) sCurrentNews = news;
+  if (newStandings && standings.valid) sCurrentStandings = standings;
 
   // ---- Decide which game (if any) the board should follow ----
   //
@@ -185,9 +197,10 @@ void tick(const SportTickContext& ctx) {
   // Render based on state.
   if (scoreboardState == ScoreboardState::WAITING) {
     // First entry to WAITING (or schedule refresh): refresh the standby screen.
-    if (sLastScheduleRenderAt == 0 || newSchedule) {
+    if (sLastScheduleRenderAt == 0 || newSchedule || newNews || newStandings) {
       sLastScheduleRenderAt = now;
-      renderWaiting(sHasCurrentSchedule ? &sCurrentSchedule : nullptr);
+      renderWaiting(sHasCurrentSchedule ? &sCurrentSchedule : nullptr,
+                    &sCurrentNews, &sCurrentStandings);
       logWaitingDisplayState();
     }
   } else {

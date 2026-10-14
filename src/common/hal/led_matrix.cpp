@@ -133,12 +133,12 @@ void rotateMatrix90Ccw(uint8_t rows[8]) {
 // score (MAX7219_SCORE_BLANK) leaves the matrix dark for "no active game".
 // Single-digit values use the bold 2-px-stroke 6x8 glyph; values >= 10 fall
 // back to two thin 3x5 digits side by side (a bold pair cannot fit 8 cols).
-void scoreToMatrixRows(int score, uint8_t rows[8]) {
+void scoreToMatrixRows(int score, bool useLargeFont, uint8_t rows[8]) {
   for (int i = 0; i < 8; i++) rows[i] = 0;
   if (score < 0) return;
   if (score > 99) score = 99;
 
-  if (score < 10) {
+  if (useLargeFont) {
     for (int r = 0; r < 8; r++) {
       rows[r] = (FONT_6X8_BOLD[score][r] & 0x3F) << 1; // Center 6 bits in 8 cols
     }
@@ -190,8 +190,10 @@ void setMax7219Scores(int awayScore, int homeScore) {
   uint8_t awayRows[8];
   uint8_t homeRows[8];
 
-  scoreToMatrixRows(awayScore, awayRows);
-  scoreToMatrixRows(homeScore, homeRows);
+  const bool useLargeFont = awayScore >= 0 && homeScore >= 0 &&
+                            awayScore < 10 && homeScore < 10;
+  scoreToMatrixRows(awayScore, useLargeFont, awayRows);
+  scoreToMatrixRows(homeScore, useLargeFont, homeRows);
   writeMatrixRows(awayRows, homeRows);
 }
 
@@ -219,8 +221,9 @@ void updateMax7219Clock(bool enabled) {
   // "9", minute "7") render in the bold 6x8 glyph, two-digit values in the
   // 3x5 pair style. The former leading-zero pairing ("07") was dropped so
   // single-digit values get the bold treatment the score displays use.
-  scoreToMatrixRows(localTime.tm_min, awayRows);
-  scoreToMatrixRows(hour, homeRows);
+  const bool useLargeFont = localTime.tm_min < 10 && hour < 10;
+  scoreToMatrixRows(localTime.tm_min, useLargeFont, awayRows);
+  scoreToMatrixRows(hour, useLargeFont, homeRows);
   setMatrixIntensity(MATRIX_CLOCK_INTENSITY);
   writeMatrixRows(awayRows, homeRows);
   lastClockMinute = localTime.tm_min;

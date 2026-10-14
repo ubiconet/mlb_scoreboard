@@ -17,12 +17,16 @@
 bool takeLinescoreSnapshot(LinescoreSnapshot& out, uint32_t& lastGen);
 bool takePlaySnapshot(PlaySnapshot& out, uint32_t& lastGen);
 bool takeScheduleSnapshot(ScheduleSnapshot& out, uint32_t& lastGen);
+bool takeNewsSnapshot(NewsSnapshot& out, uint32_t& lastGen);
+bool takeStandingsSnapshot(StandingsSnapshot& out, uint32_t& lastGen);
 
 // Core-0 publishers: push fresh snapshots to the render core.
 namespace mlb_data {
 void publishLinescore(const LinescoreSnapshot& s);
 void publishPlay(const PlaySnapshot& s);
 void publishSchedule(const ScheduleSnapshot& s);
+void publishNews(const NewsSnapshot& s);
+void publishStandings(const StandingsSnapshot& s);
 }
 
 // Current live-game tracker (set by the main loop; read by the data task).

@@ -16,6 +16,7 @@ bool fetchMlbLatestPlay(int gamePk, JsonDocument& doc);
 // Fetch AL+NL division standings (one record set per division). season=0 lets
 // the API default to the current season.
 bool fetchMlbStandings(JsonDocument& doc, int season = 0);
+bool fetchEspnMlbNews(JsonDocument& doc, int limit = 3);
 
 // True when a specific scheduled game is final.
 bool isMlbGameFinal(JsonObjectConst scheduleRoot, int gamePk);

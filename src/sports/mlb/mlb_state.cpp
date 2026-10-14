@@ -9,6 +9,8 @@ namespace {
 SnapshotChannel<LinescoreSnapshot> gLinescoreChannel;
 SnapshotChannel<PlaySnapshot>      gPlayChannel;
 SnapshotChannel<ScheduleSnapshot>  gScheduleChannel;
+SnapshotChannel<NewsSnapshot>      gNewsChannel;
+SnapshotChannel<StandingsSnapshot> gStandingsChannel;
 
 // Cross-task counters + error tag for the schedule fetch. The data task on
 // core 0 increments these every time it tries (and fails) to fetch the
@@ -31,11 +33,21 @@ bool takePlaySnapshot(PlaySnapshot& out, uint32_t& lastGen) {
 bool takeScheduleSnapshot(ScheduleSnapshot& out, uint32_t& lastGen) {
   return gScheduleChannel.take(out, lastGen);
 }
+bool takeNewsSnapshot(NewsSnapshot& out, uint32_t& lastGen) {
+  return gNewsChannel.take(out, lastGen);
+}
+bool takeStandingsSnapshot(StandingsSnapshot& out, uint32_t& lastGen) {
+  return gStandingsChannel.take(out, lastGen);
+}
 
 namespace mlb_data {
 void publishLinescore(const LinescoreSnapshot& s) { gLinescoreChannel.publish(s); }
 void publishPlay(const PlaySnapshot& s)          { gPlayChannel.publish(s); }
 void publishSchedule(const ScheduleSnapshot& s)  { gScheduleChannel.publish(s); }
+void publishNews(const NewsSnapshot& s)          { gNewsChannel.publish(s); }
+void publishStandings(const StandingsSnapshot& s) {
+  gStandingsChannel.publish(s);
+}
 }
 
 int gActiveGamePk = 0;

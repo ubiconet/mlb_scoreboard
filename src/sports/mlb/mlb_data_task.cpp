@@ -150,6 +150,12 @@ void copySchedule(JsonObjectConst scheduleRoot, ScheduleSnapshot& dst) {
         strlcpy(dst.upcoming.gameDate, game["gameDate"] | "",
                 sizeof(dst.upcoming.gameDate));
         dst.upcoming.valid = dst.upcoming.gamePk > 0;
+      } else if (strcmp(state, "Final") == 0 && dst.recentCount < 3) {
+        RecentGameLite& slot = dst.recent[dst.recentCount++];
+        slot.awayTeamId = game["teams"]["away"]["team"]["id"] | 0;
+        slot.homeTeamId = game["teams"]["home"]["team"]["id"] | 0;
+        slot.awayScore = game["teams"]["away"]["score"] | 0;
+        slot.homeScore = game["teams"]["home"]["score"] | 0;
       }
     }
   }
@@ -191,6 +197,56 @@ bool fetchScheduleSnapshot(ScheduleSnapshot& out) {
   DBG_PRINTF("[SCHED] fetched OK on attempt %u\n",
              (unsigned)getScheduleFetchSuccesses());
   return out.valid;
+}
+
+void fetchIdleContentIfDue() {
+  static uint32_t lastNewsAt = 0;
+  static uint32_t lastStandingsAt = 0;
+  const uint32_t now = millis();
+  if (getActiveGamePk() != 0) return;
+
+  if (lastNewsAt == 0 || now - lastNewsAt >= 30UL * 60UL * 1000UL) {
+    lastNewsAt = now;
+    if (fetchEspnMlbNews(mlbDoc)) {
+      NewsSnapshot news{};
+      for (JsonObjectConst article : mlbDoc["articles"].as<JsonArrayConst>()) {
+        if (news.count >= 3) break;
+        const char* headline = article["headline"] | "";
+        if (headline[0] == '\0') continue;
+        strlcpy(news.headline[news.count++], headline,
+                sizeof(news.headline[0]));
+      }
+      news.valid = news.count > 0;
+      if (news.valid) mlb_data::publishNews(news);
+    }
+    mlbDoc.clear();
+  }
+
+  if (lastStandingsAt == 0 || now - lastStandingsAt >= 30UL * 60UL * 1000UL) {
+    lastStandingsAt = now;
+    http_fetch::closeSession();
+    if (fetchMlbStandings(mlbDoc)) {
+      StandingsSnapshot standings{};
+      for (JsonObjectConst record : mlbDoc["records"].as<JsonArrayConst>()) {
+        if (standings.divisionCount >= 6) break;
+        uint8_t division = standings.divisionCount++;
+        strlcpy(standings.division[division],
+                record["division"]["name"] | "Division",
+                sizeof(standings.division[division]));
+        for (JsonObjectConst team : record["teamRecords"].as<JsonArrayConst>()) {
+          if (standings.count[division] >= 5) break;
+          StandingsRow& row =
+              standings.rows[division][standings.count[division]++];
+          row.teamId = team["team"]["id"] | 0;
+          row.wins = team["wins"] | 0;
+          row.losses = team["losses"] | 0;
+        }
+      }
+      standings.valid = standings.divisionCount > 0;
+      if (standings.valid) mlb_data::publishStandings(standings);
+    }
+    mlbDoc.clear();
+  }
 }
 
 void mlbDataTaskLoop(void*) {
@@ -275,6 +331,7 @@ void mlbDataTaskLoop(void*) {
       }
 
       int activeGamePk = getActiveGamePk();
+      fetchIdleContentIfDue();
       static uint32_t lastLivePollAt = 0;
       if (activeGamePk > 0 && now - lastLivePollAt >= MLB_LIVE_POLL_INTERVAL_MS) {
         lastLivePollAt = now;

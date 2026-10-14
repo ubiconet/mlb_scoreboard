@@ -30,7 +30,9 @@ bool isAtBatResultVisible();
 // Renders the waiting state (no live game), including the next game in the
 // current slate when available. Count LEDs are dark and score matrices are
 // released to the idle clock.
-void renderWaiting(const ScheduleSnapshot* schedule = nullptr);
+void renderWaiting(const ScheduleSnapshot* schedule = nullptr,
+                   const NewsSnapshot* news = nullptr,
+                   const StandingsSnapshot* standings = nullptr);
 
 // Writes the current TFT, LED matrix, and discrete LED state to Serial.
 void logLiveDisplayState(const LinescoreSnapshot& linescore, int gamePk);

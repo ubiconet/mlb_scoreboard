@@ -141,7 +141,7 @@ bool fetchMlbStandings(JsonDocument& doc, int season) {
   HTTPClient http;
   String url = "http://statsapi.mlb.com/api/v1/standings?leagueId=103,104"
                "&standingsTypes=regularSeason"
-               "&fields=records,division,id,teamRecords,team,id,name,"
+               "&fields=records,division,id,name,teamRecords,team,id,name,"
                "divisionRank,gamesBack,wins,losses,clinched,wildCardGamesBack";
   if (season > 0) {
     url += "&season=";
@@ -161,6 +161,7 @@ bool fetchMlbStandings(JsonDocument& doc, int season) {
     // Filter client-side so only what we render is kept in memory.
     JsonDocument filter;
     filter["records"][0]["division"]["id"] = true;
+    filter["records"][0]["division"]["name"] = true;
     filter["records"][0]["teamRecords"][0]["team"]["id"] = true;
     filter["records"][0]["teamRecords"][0]["team"]["name"] = true;
     filter["records"][0]["teamRecords"][0]["wins"] = true;
@@ -185,6 +186,36 @@ bool fetchMlbStandings(JsonDocument& doc, int season) {
   DBG_PRINTF("[MLB] Standings HTTP error: %d\n", httpCode);
   http.end();
   return false;
+}
+
+bool fetchEspnMlbNews(JsonDocument& doc, int limit) {
+  String url =
+      "http://site.api.espn.com/apis/site/v2/sports/baseball/mlb/news?limit=";
+  url += String(limit);
+
+  doc.clear();
+  http_fetch::closeSession();
+  HTTPClient http;
+  WiFiClient client;
+  http.begin(client, url);
+  http.setTimeout(8000);
+  int httpCode = http.GET();
+  http_fetch::logCall("espn_mlb_news", httpCode);
+  if (httpCode != HTTP_CODE_OK) {
+    http.end();
+    return false;
+  }
+
+  JsonDocument filter;
+  filter["articles"][0]["headline"] = true;
+  DeserializationError error =
+      deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+  http.end();
+  if (error) {
+    DBG_PRINTF("[ESPN] News JSON parse error: %s\n", error.c_str());
+    return false;
+  }
+  return doc["articles"].as<JsonArrayConst>().size() > 0;
 }
 
 bool isMlbGameFinal(JsonObjectConst scheduleRoot, int gamePk) {

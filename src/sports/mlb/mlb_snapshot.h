@@ -66,10 +66,39 @@ struct UpcomingGameLite {
   bool valid;
 };
 
+struct RecentGameLite {
+  int awayTeamId;
+  int homeTeamId;
+  int awayScore;
+  int homeScore;
+};
+
 struct ScheduleSnapshot {
   OtherGameLite others[9];
   size_t otherCount;
   UpcomingGameLite upcoming;
+  RecentGameLite recent[3];
+  size_t recentCount;
+  bool valid;
+};
+
+struct NewsSnapshot {
+  char headline[3][100];
+  size_t count;
+  bool valid;
+};
+
+struct StandingsRow {
+  int teamId;
+  int wins;
+  int losses;
+};
+
+struct StandingsSnapshot {
+  char division[6][16];
+  StandingsRow rows[6][5];
+  uint8_t count[6];
+  uint8_t divisionCount;
   bool valid;
 };
 
@@ -85,4 +114,6 @@ namespace mlb_data {
 void publishLinescore(const LinescoreSnapshot& s);
 void publishPlay(const PlaySnapshot& s);
 void publishSchedule(const ScheduleSnapshot& s);
+void publishNews(const NewsSnapshot& s);
+void publishStandings(const StandingsSnapshot& s);
 }

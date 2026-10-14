@@ -36,16 +36,47 @@ bool manifestIsNewer(const char* manifestVersion) {
   return mfMaj > fwMaj || (mfMaj == fwMaj && mfMin > fwMin);
 }
 
-// Reads exactly Content-Length bytes of an already-header-parsed response
-// into buf (leaving the keep-alive connection clean for the next request).
-// Returns the number of bytes read, or 0 on timeout/overflow.
+// Reads a small manifest body with either Content-Length or chunked framing.
+// GitHub raw responses may use either form depending on the CDN edge.
 size_t readExactBody(HTTPClient& http, uint8_t* buf, size_t bufLen) {
   WiFiClient* stream = http.getStreamPtr();
   if (stream == nullptr) return 0;
   int remaining = http.getSize();  // -1 when absent
-  if (remaining < 0 || (size_t)remaining > bufLen) return 0;
   size_t got = 0;
   uint32_t deadline = millis() + 8000;
+  if (remaining < 0) {
+    while (stream->available() == 0 && stream->connected() &&
+           millis() < deadline) {
+      delay(2);
+    }
+    if (stream->peek() < 0) return 0;
+    while (millis() < deadline) {
+      String line = stream->readStringUntil('\n');
+      line.trim();
+      if (line.length() == 0) continue;
+      long chunkSize = strtol(line.c_str(), nullptr, 16);
+      if (chunkSize <= 0) return got;
+      if (got + static_cast<size_t>(chunkSize) > bufLen) return 0;
+      size_t chunkRead = 0;
+      while (chunkRead < static_cast<size_t>(chunkSize) &&
+             millis() < deadline) {
+        size_t available = stream->available();
+        if (available == 0) {
+          delay(2);
+          continue;
+        }
+        size_t n = stream->readBytes(
+            buf + got + chunkRead,
+            min(available, static_cast<size_t>(chunkSize) - chunkRead));
+        chunkRead += n;
+      }
+      if (chunkRead != static_cast<size_t>(chunkSize)) return 0;
+      got += chunkRead;
+      stream->readStringUntil('\n');  // chunk's trailing CRLF
+    }
+    return 0;
+  }
+  if (static_cast<size_t>(remaining) > bufLen) return 0;
   while (got < (size_t)remaining && millis() < deadline) {
     size_t avail = stream->available();
     if (avail == 0) {
