@@ -217,13 +217,10 @@ void updateMax7219Clock(bool enabled) {
   uint8_t homeRows[8];
   int hour = localTime.tm_hour % 12;
   if (hour == 0) hour = 12;
-  // Each value uses the biggest font that fits: single digits (e.g. hour
-  // "9", minute "7") render in the bold 6x8 glyph, two-digit values in the
-  // 3x5 pair style. The former leading-zero pairing ("07") was dropped so
-  // single-digit values get the bold treatment the score displays use.
-  const bool useLargeFont = localTime.tm_min < 10 && hour < 10;
-  scoreToMatrixRows(localTime.tm_min, useLargeFont, awayRows);
-  scoreToMatrixRows(hour, useLargeFont, homeRows);
+  // Clock mode always uses the compact two-digit glyph on both matrices.
+  // This preserves the leading zero for minutes (for example, 9:07).
+  scoreToMatrixRows(localTime.tm_min, false, awayRows);
+  scoreToMatrixRows(hour, false, homeRows);
   setMatrixIntensity(MATRIX_CLOCK_INTENSITY);
   writeMatrixRows(awayRows, homeRows);
   lastClockMinute = localTime.tm_min;
