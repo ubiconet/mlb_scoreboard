@@ -91,9 +91,10 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
 - **Manual mode (v2.61):** the setup portal's "Manual Mode" page
   (`/manual`, handlers + volatile state in `common/comms/network_service`,
   same pattern as the NHL scoreboard) fully overrides the display: the TFT
-  shows the boot splash, the matrices show portal-set scores, and the count
-  LEDs follow portal-set balls/strikes/outs (inning + top/bottom are held
-  in state). `mlb_app.cpp`'s tick short-circuits into
+  shows a dedicated manual screen (inning number in the live screen's red
+  LED-dot font with TOP/BOTTOM in white beneath, v2.69), the matrices show
+  portal-set scores, and the count LEDs follow portal-set
+  balls/strikes/outs. `mlb_app.cpp`'s tick short-circuits into
   `renderManual()` while active and repaints the previous screen on exit.
 - **Core 0 (FreeRTOS tasks):** the network task (portal/DNS/ArduinoOTA,
   priority 2) and the MLB data task (`sports/mlb/mlb_data_task.cpp`,
@@ -147,24 +148,31 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
   matches the published manifest version (devices only flash strictly
   newer versions), so **bump `FIRMWARE_VERSION` in `src/config.h` before
   every deploy**. GitHub's raw CDN caches the manifest ~5 min after a push.
-- **Self-update flow** (`src/common/comms/ota_update.cpp`; approach
-  verified end-to-end on the same framework/hardware in the NHL port —
-  device pulled a 1.67 MB release from GitHub raw and rebooted into it
-  in ~25 s): shortly after the network comes online (before any feed
-  fetch — the TLS handshake needs the pristine boot heap; on this core
-  2.0.x the 2x16 KB mbedTLS buffers cannot be shrunk, `setBufferSizes`
-  is a 3.x API), the core-0 data task fetches the manifest over TLS
-  (the only TLS connection the updater makes; the feeds run plain
-  HTTP — see the note at the top of `sports/mlb/mlb_client.cpp` and
-  `common/comms/http_fetcher.h`). If the manifest version is strictly
-  newer than `FIRMWARE_VERSION`, manifest and binary download over ONE
-  reused TLS session (this AP refuses a second fresh TLS handshake
-  moments after the first) while the renderer shows the "do not turn
-  off" progress screen (`common/ui/ota_screen.cpp`), then the device
-  reboots into the new image. Failures leave the current firmware
-  running.
+- **Self-update flow** (`src/common/comms/ota_update.cpp`; the TLS
+  handshake only fits the heap with the **display park** of v2.69 — before
+  it, the 2x16 KB mbedTLS SSL buffers (unshrinkable on core 2.0.x,
+  `setBufferSizes` is a 3.x API) plus GitHub's certificate-chain parse
+  landed on a ~15 KB largest heap block and died with
+  `X509 - Allocation of memory failed`): the render core parks before
+  every handshake (`OtaStage::CHECKING` → `handleOtaUpdateScreen` stops
+  rendering and calls `tftPanel.releaseCanvas()`, freeing the ~150 KB
+  canvas; the updater waits for `otaDisplayParked()` before touching
+  TLS). With the canvas freed the handshake gets ~200 KB and succeeds —
+  this also fixed the portal's mid-session "check now". The core-0 data
+  task then fetches the manifest over TLS (the only TLS connection the
+  updater makes; the feeds run plain HTTP — see the note at the top of
+  `sports/mlb/mlb_client.cpp` and `common/comms/http_fetcher.h`). If the
+  manifest version is strictly newer than `FIRMWARE_VERSION`, manifest
+  and binary download over ONE reused TLS session (this AP refuses a
+  second fresh TLS handshake moments after the first) while the renderer
+  shows the "do not turn off" progress screen
+  (`common/ui/ota_screen.cpp`), then the device reboots into the new
+  image. Failures leave the current firmware running. One-off radio
+  drops during the first handshake have been observed (the AP's burst
+  protection); the boot window now allows three attempts and skips
+  attempts while Wi-Fi is re-associating.
 - **Update checks are BOOT-ONLY** (adopted from the NHL port): the
-  automatic check runs exactly once per power cycle — two attempts in
+  automatic check runs exactly once per power cycle — three attempts in
   the boot window, then never again mid-session (the fragmented
   post-feed heap can't fund the handshake, and the AP refuses later
   fresh TLS connections). To update a running device: power-cycle it,

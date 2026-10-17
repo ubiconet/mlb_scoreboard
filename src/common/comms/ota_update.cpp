@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <Update.h>
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
 
 #include "config.h"
@@ -20,11 +21,10 @@ bool sLastCheckOk = false;
 uint32_t sLastCheckAt = 0;
 volatile bool sCheckRequested = false;
 uint8_t sBootAttempts = 0;
-// Two shots in the pristine-heap boot window, no more: each failed TLS
-// attempt costs ~15 s (timeout + gap), and holding the feed fetches behind
-// six of them starved game data past the boot screens. The 10-minute
-// periodic retry picks the update check back up regardless.
-const uint8_t OTA_BOOT_MAX_ATTEMPTS = 2;
+// Two shots in the pristine-heap boot window were the old budget; three
+// survives the observed one-off radio drop during a first handshake (the
+// re-association lands well inside attempt 2/3 pacing).
+const uint8_t OTA_BOOT_MAX_ATTEMPTS = 3;
 
 // True when the manifest version is strictly NEWER than FIRMWARE_VERSION.
 // Both are "vMAJOR.MINOR"; anything unparsable is treated as not newer so
@@ -169,7 +169,29 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
       return;
     }
   }
+  // Don't burn an attempt mid-reassociation: a handshake on a dead link
+  // fails without telling us anything about the update path.
+  if (WiFi.status() != WL_CONNECTED) return;
   sLastCheckAt = millis();
+
+  // Park the display before touching TLS: its render canvas holds ~150 KB
+  // the handshake needs. The 2x16 KB SSL buffers + GitHub's certificate
+  // chain parse measured OVER the remaining ~15 KB largest block and died
+  // with "X509 - Allocation of memory failed"; with the canvas freed the
+  // handshake gets ~200 KB and fits easily. The render loop acks by setting
+  // otaDisplayParked() after it stops rendering and frees the canvas.
+  publishOtaStage(OtaStage::CHECKING, 0);
+  uint32_t parkDeadline = millis() + 3000;
+  while (!otaDisplayParked() && millis() < parkDeadline) delay(10);
+  if (!otaDisplayParked()) {
+    // Render loop wedged in a long frame; skip this attempt, try later.
+    publishOtaStage(OtaStage::NONE, 0);
+    sBootAttempts++;
+    sCheckedOnce = (sBootAttempts >= OTA_BOOT_MAX_ATTEMPTS);
+    return;
+  }
+  DBG_PRINTF("[OTA] display parked: freeHeap=%u maxAlloc=%u\n",
+             (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
 
   // Run alone: drop the feed keep-alive session and let the data-task
   // loop hold the feed fetches until this returns.
@@ -183,6 +205,7 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
     DBG_PRINTF("[OTA] Update.begin failed: %s (freeHeap=%u maxAlloc=%u)\n",
                Update.errorString(), ESP.getFreeHeap(),
                ESP.getMaxAllocHeap());
+    publishOtaStage(OtaStage::NONE, 0);
     return;
   }
 
@@ -202,6 +225,21 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   HTTPClient http;
   http.setReuse(true);
 
+  // Un-publish CHECKING only after the TLS session is really gone. With
+  // setReuse(true), http.end() KEEPS the connection open, and the stack
+  // object only frees its ~40 KB of TLS buffers when serviceOtaUpdates
+  // returns — after the render core has already un-parked and tried to
+  // re-allocate the 153.6 KB canvas. That race handed the render core a
+  // null-buffer canvas and a StoreProhibited panic, so stop the client
+  // synchronously and give lwIP a beat before releasing the display.
+  auto concludeNoUpdate = [&]() {
+    http.end();
+    client.stop();
+    Update.abort();
+    delay(250);
+    publishOtaStage(OtaStage::NONE, 0);
+  };
+
   http.begin(client, OTA_MANIFEST_URL);
   http.setTimeout(10000);
   int httpCode = http.GET();
@@ -209,13 +247,12 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   uint8_t manifestBuf[512];
   if (httpCode != HTTP_CODE_OK ||
       readExactBody(http, manifestBuf, sizeof(manifestBuf)) == 0) {
-    http.end();
-    Update.abort();
     sLastCheckOk = false;
     sBootAttempts++;
     // After the boot attempts are exhausted, let the feeds start; the
     // periodic retry takes over from there.
     sCheckedOnce = (sBootAttempts >= OTA_BOOT_MAX_ATTEMPTS);
+    concludeNoUpdate();
     return;
   }
   // Manifest fetched: from here on, every outcome counts as "checked" so
@@ -229,10 +266,8 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
       deserializeJson(doc, (const char*)manifestBuf);
   if (error) {
     DBG_PRINTF("[OTA] manifest parse error: %s\n", error.c_str());
-    http.end();
-    Update.abort();
     sLastCheckOk = false;
-    sCheckedOnce = true;  // fetched-but-bad: don't spin on it
+    concludeNoUpdate();
     return;
   }
   char manifestVersion[16] = {};
@@ -249,17 +284,14 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   }
   sLastCheckOk = manifestVersion[0] != '\0' && url.length() > 0;
   if (!sLastCheckOk) {
-    http.end();
-    Update.abort();
-    sCheckedOnce = true;  // fetched-but-incomplete: don't spin on it
+    concludeNoUpdate();
     return;
   }
 
   if (!manifestIsNewer(manifestVersion)) {
     DBG_PRINTF("[OTA] up to date (%s, manifest %s)\n", FIRMWARE_VERSION,
                manifestVersion);
-    http.end();
-    Update.abort();
+    concludeNoUpdate();
     return;
   }
   DBG_PRINTF("[OTA] update available: %s -> %s\n", FIRMWARE_VERSION,
@@ -282,7 +314,12 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   DBG_PRINTF("[OTA] firmware -> HTTP %d (%d bytes)\n", httpCode, total);
   if (httpCode != HTTP_CODE_OK) {
     http.end();
+    client.stop();
     Update.abort();
+    publishOtaStage(OtaStage::FAILED, 0);
+    uint32_t failUntil = millis() + 2000;
+    while (millis() < failUntil) delay(50);
+    publishOtaStage(OtaStage::NONE, 0);
     return;
   }
 
@@ -297,6 +334,7 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   // Failed update: tell the user, then fall back to normal operation. The
   // current firmware partition is untouched — Update only swaps on a fully
   // written + verified image.
+  client.stop();
   Update.abort();
   publishOtaStage(OtaStage::FAILED, 0);
   uint32_t failUntil = millis() + 5000;
@@ -306,7 +344,11 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
 
 bool otaUpdateInProgress() {
   OtaStage stage = getOtaStage();
-  return stage == OtaStage::DOWNLOADING || stage == OtaStage::REBOOTING;
+  // CHECKING included: feed fetches must stay held while the display is
+  // parked (their heap and the keep-alive session would fight the
+  // handshake the park just made room for).
+  return stage == OtaStage::CHECKING || stage == OtaStage::DOWNLOADING ||
+         stage == OtaStage::REBOOTING;
 }
 
 void requestOtaCheckNow() { sCheckRequested = true; }

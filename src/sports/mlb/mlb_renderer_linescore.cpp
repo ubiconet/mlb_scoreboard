@@ -64,9 +64,11 @@ RenderedFrame gRendered{};
 bool gHasRendered = false;
 
 // Manual-mode output cache — mirrors RenderedFrame's role for the
-// portal-driven manual screen (TFT splash + matrices + count LEDs).
+// portal-driven manual screen (TFT inning display + matrices + count LEDs).
 struct ManualDrawn {
   bool drawn = false;
+  int inning = -1;
+  bool topOfInning = true;
   int awayScore = -1, homeScore = -1;
   int balls = -1, strikes = -1, outs = -1;
 };
@@ -525,12 +527,42 @@ bool isAtBatResultVisible() { return atBatResultVisible; }
 
 void invalidateManualScreen() { md = ManualDrawn{}; }
 
-void renderManual(int logoWidth, int logoHeight, const uint16_t* logoPixels) {
-  // TFT: the scoreboard splash screen owns the panel for the whole manual
-  // session (static artwork + firmware version — one repaint on entry).
-  if (!md.drawn) {
+void renderManual() {
+  // TFT: dedicated manual screen. The inning renders in the same red
+  // LED-dot font as the live screen's inning header (drawLedDigit), with
+  // the half-inning spelled out in white beneath. Repainted only when the
+  // inning or half changes; scores/counts are hardware-only (matrices and
+  // the 7 count LEDs), so nothing here touches them.
+  int inning = getManualInning();
+  bool top = getManualTopOfInning();
+  if (inning < 1) inning = 1;
+  if (!md.drawn || inning != md.inning || top != md.topOfInning) {
+    bool firstDraw = !md.drawn;
     md.drawn = true;
-    renderBootSplash(logoWidth, logoHeight, logoPixels);
+    md.inning = inning;
+    md.topOfInning = top;
+    GFXcanvas16& canvas = tftPanel.canvas();
+    if (firstDraw) {
+      canvas.fillScreen(COLOR_BG);
+      canvas.setTextColor(COLOR_GOLD);
+      canvas.setTextSize(2);
+      drawCenteredText(canvas, "MANUAL MODE", 160, 14);
+    } else {
+      canvas.fillRect(0, 50, 320, 150, COLOR_BG);
+    }
+    if (inning < 10) {
+      drawLedDigit(canvas, 144, 70, inning);
+    } else {
+      if (inning > 99) inning = 99;
+      drawLedDigit(canvas, 122, 70, inning / 10);
+      drawLedDigit(canvas, 166, 70, inning % 10);
+    }
+    canvas.setTextColor(ST77XX_WHITE);
+    canvas.setTextSize(3);
+    drawCenteredText(canvas, top ? "TOP" : "BOTTOM", 160, 150);
+    tftPanel.pushFull();
+    DBG_PRINTF("[DISPLAY] manual inning: %d %s\n", inning,
+               top ? "top" : "bottom");
   }
 
   // Hardware outputs (scores + 7 count LEDs) update independently of the

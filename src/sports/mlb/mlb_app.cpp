@@ -129,7 +129,7 @@ void tick(const SportTickContext& ctx) {
       sInManual = true;
       invalidateManualScreen();
     }
-    renderManual(BOOT_LOGO_WIDTH, BOOT_LOGO_HEIGHT, BOOT_LOGO_MLB);
+    renderManual();
     return;
   }
   if (sInManual) {

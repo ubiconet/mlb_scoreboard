@@ -678,6 +678,7 @@ void serveOtaStatus() {
   markPortalActivity();
   const char* stage = "NONE";
   switch (getOtaStage()) {
+    case OtaStage::CHECKING:   stage = "CHECKING";   break;
     case OtaStage::DOWNLOADING: stage = "DOWNLOADING"; break;
     case OtaStage::REBOOTING:   stage = "REBOOTING";   break;
     case OtaStage::FAILED:      stage = "FAILED";      break;

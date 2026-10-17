@@ -27,6 +27,12 @@ class TftPanel {
   // instead of crashing on a null deref.
   GFXcanvas16& canvas();
 
+  // Frees the canvas buffer (~150 KB). For the OTA updater only: its TLS
+  // handshake cannot fit the heap alongside the canvas, so the render core
+  // parks (stops rendering) and calls this; the next canvas() call lazily
+  // re-allocates. Never call while any draw is in flight.
+  void releaseCanvas();
+
   // Push the whole canvas to the panel in a single call.
   void pushFull();
 

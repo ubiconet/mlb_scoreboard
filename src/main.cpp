@@ -15,6 +15,7 @@
 #include "common/app/power_monitor.h"
 #include "common/app/sport_api.h"
 #include "common/comms/network_service.h"
+#include "common/comms/ota_update.h"
 #include "common/ui/boot_status.h"
 #include "common/ui/ota_screen.h"
 
@@ -99,6 +100,16 @@ void loop() {
   static uint32_t onlineSinceMs = 0;
   if (onlineSinceMs == 0 && isOnline()) {
     onlineSinceMs = bootNow;
+  }
+  // The FIRST canvas allocation waits until the boot OTA check is done:
+  // its TLS handshake needs the ~150 KB the canvas holds (and once freed,
+  // a fragmented heap may never fit the canvas back). The splash was drawn
+  // direct to the panel and covers this window. Provisioning bypasses the
+  // gate — offline there is no check to wait for, and the AP setup page
+  // must appear.
+  uint32_t onlineFor = (onlineSinceMs != 0) ? bootNow - onlineSinceMs : 0;
+  if (!otaBootGateReached(onlineFor) && !isProvisioning()) {
+    return;
   }
   if (!isProvisioning()) {
     if (onlineSinceMs == 0 && bootNow < BOOT_SPLASH_CONNECT_MAX_MS) {

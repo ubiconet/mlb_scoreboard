@@ -46,12 +46,11 @@ void rotateCarousel();
 void updateOtherGames(const ScheduleSnapshot& schedule, int excludeGamePk);
 
 // ---- Manual mode (portal "Manual Mode" page owns the values) ----
-// TFT shows the boot splash screen; the score matrices and count LEDs
-// follow the portal-set values. Value-cached like the live screen.
-// The splash artwork is passed in by the caller (like renderBootSplash)
-// so this file never includes boot_logo.h — the logo array lives in the
-// one TU that defines it (mlb_app.cpp) and must not be emitted twice.
-void renderManual(int logoWidth, int logoHeight, const uint16_t* logoPixels);
+// TFT shows a dedicated manual screen: the inning number in the same red
+// LED-dot font the live inning header uses, with TOP/BOTTOM spelled out
+// in white beneath it. The score matrices and count LEDs follow the
+// portal-set values. Value-cached like the live screen.
+void renderManual();
 // Drops the manual screen's cache so the next renderManual() repaints
 // everything (called on manual-mode entry).
 void invalidateManualScreen();

@@ -11,6 +11,9 @@ namespace {
 volatile OtaStage gOtaStage = OtaStage::NONE;
 volatile int gOtaProgress = 0;
 char gOtaTargetVersion[16] = "";
+// Set by the render loop when it has parked for stage CHECKING (rendering
+// stopped, canvas freed); cleared again on stage NONE.
+volatile bool gDisplayParked = false;
 
 void renderOtaUpdateScreen() {
   GFXcanvas16& canvas = tftPanel.canvas();
@@ -66,8 +69,23 @@ void setOtaTargetVersion(const char* version) {
   strlcpy(gOtaTargetVersion, version, sizeof(gOtaTargetVersion));
 }
 
+bool otaDisplayParked() { return gDisplayParked; }
+
 bool handleOtaUpdateScreen() {
-  if (gOtaStage == OtaStage::NONE) return false;
+  if (gOtaStage == OtaStage::NONE) {
+    gDisplayParked = false;
+    return false;
+  }
+  if (gOtaStage == OtaStage::CHECKING) {
+    // Park: free the render canvas so the updater's TLS handshake gets the
+    // ~150 KB it holds. The panel keeps showing the last pushed frame
+    // (splash / status page) — no redraws until the check finishes.
+    if (!gDisplayParked) {
+      tftPanel.releaseCanvas();
+      gDisplayParked = true;
+    }
+    return true;
+  }
   // Full-screen redraw on stage change (~1.2 s per push on the software
   // SPI); progress ticks only repaint the bar/text window so the download
   // UI stays responsive without monopolizing the render loop.
@@ -76,7 +94,7 @@ bool handleOtaUpdateScreen() {
   if (gOtaStage != sLastDrawnStage) {
     sLastDrawnStage = gOtaStage;
     sLastDrawnPct = -1;
-    renderOtaUpdateScreen();
+    renderOtaUpdateScreen();  // canvas re-allocates lazily here (post-park)
     return true;
   }
   if (gOtaStage == OtaStage::DOWNLOADING && gOtaProgress != sLastDrawnPct) {

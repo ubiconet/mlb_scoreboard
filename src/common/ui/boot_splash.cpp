@@ -8,21 +8,26 @@
 #include "common/ui/gfx.h"
 
 void renderBootSplash(int logoWidth, int logoHeight, const uint16_t* logoPixels) {
-  GFXcanvas16& canvas = tftPanel.canvas();
-  canvas.fillScreen(COLOR_BG);
+  // Drawn DIRECTLY to the panel, deliberately before the render canvas
+  // exists: the boot OTA check needs the ~150 KB the canvas would hold,
+  // and once freed a fragmented heap may never fit the canvas back. The
+  // splash must not be the thing that allocates it.
+  Adafruit_ST7789& tft = tftPanel.raw();
+  tft.fillScreen(COLOR_BG);
 
   int x = (320 - logoWidth) / 2;
   int y = (240 - logoHeight) / 2;
+  uint16_t row[320];
   for (int py = 0; py < logoHeight; py++) {
     for (int px = 0; px < logoWidth; px++) {
-      uint16_t color = pgm_read_word(logoPixels + (py * logoWidth) + px);
-      canvas.drawPixel(x + px, y + py, color);
+      row[px] = pgm_read_word(logoPixels + (py * logoWidth) + px);
     }
+    tft.drawRGBBitmap(x, y + py, row, logoWidth, 1);
   }
 
-  canvas.setTextColor(COLOR_GOLD);
-  canvas.setTextSize(1);
-  drawCenteredText(canvas, FIRMWARE_VERSION, 160, 226);
-
-  tftPanel.pushFull();
+  tft.setTextColor(COLOR_GOLD);
+  tft.setTextSize(1);
+  char version[24];
+  snprintf(version, sizeof(version), " %s ", FIRMWARE_VERSION);
+  drawCenteredText(tft, version, 160, 226);
 }
