@@ -31,19 +31,25 @@ void buildScheduleFilter(JsonDocument& filter) {
 }
 } // namespace
 
-bool fetchMlbSchedule(const char* dateStr, JsonDocument& doc) {
+bool fetchMlbScheduleRange(const char* startDate, const char* endDate,
+                           JsonDocument& doc) {
   // A null/empty date asks the server for today's slate (US game-day), so the
   // device never needs its own clock. hydrate+fields pulls per-game inning
-  // state for the other-live-games ticker while keeping the payload ~3 KB.
+  // state for the other-live-games ticker while keeping the payload ~3 KB
+  // per day of range.
   String url = "http://statsapi.mlb.com/api/v1/schedule?sportId=1"
                "&hydrate=linescore"
                "&fields=dates,date,games,gamePk,status,abstractGameState,detailedState,"
                "gameDate,"
                "linescore,currentInningOrdinal,inningState,isTopInning,"
                "teams,away,team,id,name,score,home,team,id,name,score";
-  if (dateStr != nullptr && dateStr[0] != '\0') {
-    url += "&date=";
-    url += dateStr;
+  if (startDate != nullptr && startDate[0] != '\0') {
+    url += "&startDate=";
+    url += startDate;
+  }
+  if (endDate != nullptr && endDate[0] != '\0') {
+    url += "&endDate=";
+    url += endDate;
   }
 
   setScheduleLastUrl(url.c_str());
@@ -69,6 +75,10 @@ bool fetchMlbSchedule(const char* dateStr, JsonDocument& doc) {
   DBG_PRINTF("[MLB] Schedule HTTP error: %d\n", httpCode);
   http_fetch::closeSession();
   return false;
+}
+
+bool fetchMlbSchedule(const char* dateStr, JsonDocument& doc) {
+  return fetchMlbScheduleRange(dateStr, nullptr, doc);
 }
 
 bool fetchMlbLinescore(int gamePk, JsonDocument& doc) {

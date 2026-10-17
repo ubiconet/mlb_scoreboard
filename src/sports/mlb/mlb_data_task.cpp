@@ -7,6 +7,7 @@
 #include "common/comms/http_fetcher.h"
 #include "common/comms/network_service.h"
 #include "common/comms/ota_update.h"
+#include "common/data/time_util.h"
 #include "mlb_client.h"
 #include "mlb_snapshot.h"
 #include "mlb_state.h"
@@ -123,6 +124,12 @@ void copySchedule(JsonObjectConst scheduleRoot, ScheduleSnapshot& dst) {
   JsonArrayConst dates = scheduleRoot["dates"].as<JsonArrayConst>();
   if (dates.isNull() || dates.size() == 0) return;
 
+  // Finals from the (possibly multi-day) window, keeping the NEWEST 3:
+  // dates[] arrives oldest-first, so shift older ones out as later ones
+  // arrive; the standby screen then shows them newest-first.
+  RecentGameLite finals[3];
+  uint8_t finalCount = 0;
+
   for (JsonObjectConst date : dates) {
     for (JsonObjectConst game : date["games"].as<JsonArrayConst>()) {
       const char* state = game["status"]["abstractGameState"] | "";
@@ -150,15 +157,27 @@ void copySchedule(JsonObjectConst scheduleRoot, ScheduleSnapshot& dst) {
         strlcpy(dst.upcoming.gameDate, game["gameDate"] | "",
                 sizeof(dst.upcoming.gameDate));
         dst.upcoming.valid = dst.upcoming.gamePk > 0;
-      } else if (strcmp(state, "Final") == 0 && dst.recentCount < 3) {
-        RecentGameLite& slot = dst.recent[dst.recentCount++];
-        slot.awayTeamId = game["teams"]["away"]["team"]["id"] | 0;
-        slot.homeTeamId = game["teams"]["home"]["team"]["id"] | 0;
-        slot.awayScore = game["teams"]["away"]["score"] | 0;
-        slot.homeScore = game["teams"]["home"]["score"] | 0;
+      } else if (strcmp(state, "Final") == 0) {
+        RecentGameLite final{};
+        final.awayTeamId = game["teams"]["away"]["team"]["id"] | 0;
+        final.homeTeamId = game["teams"]["home"]["team"]["id"] | 0;
+        final.awayScore = game["teams"]["away"]["score"] | 0;
+        final.homeScore = game["teams"]["home"]["score"] | 0;
+        if (finalCount < 3) {
+          finals[finalCount++] = final;
+        } else {  // shift older out, append the newer
+          finals[0] = finals[1];
+          finals[1] = finals[2];
+          finals[2] = final;
+        }
       }
     }
   }
+  // Newest-first: the most recent final at the top of the results page.
+  for (uint8_t i = 0; i < finalCount; ++i) {
+    dst.recent[i] = finals[finalCount - 1 - i];
+  }
+  dst.recentCount = finalCount;
   dst.valid = true;
 }
 
@@ -180,12 +199,27 @@ bool fetchScheduleSnapshot(ScheduleSnapshot& out) {
   // Bump the attempt counter immediately so the renderer can see the data
   // task is alive even when every fetch fails.
   bumpScheduleFetchAttempt();
-  // Today's full slate (a few KB with hydrate=linescore) for live-game
-  // detection, the around-the-league ticker, and the next scheduled
-  // matchup. A null date asks the server for "today" so the device never
-  // needs its own clock. The endpoint includes every game type, including
-  // postseason; do not add a regular-season gameType filter here.
-  if (!fetchMlbSchedule(nullptr, mlbDoc)) {
+  // Yesterday+today (a few KB per day with hydrate=linescore) for
+  // live-game detection, the around-the-league ticker, the next scheduled
+  // matchup, AND the recent-results page — mid-afternoon there are often
+  // no finals yet today, so yesterday's games fill the page. A null date
+  // (clock not yet NTP-synced) asks the server for "today" alone. The
+  // endpoint includes every game type, including postseason; do not add a
+  // regular-season gameType filter here.
+  char startDate[11] = "";
+  char endDate[11] = "";
+  time_t now = time(nullptr);
+  if (timeIsSynced()) {
+    tm today = {};
+    localtime_r(&now, &today);
+    strftime(endDate, sizeof(endDate), "%Y-%m-%d", &today);
+    tm yesterday = {};
+    time_t dayAgo = now - 86400;
+    localtime_r(&dayAgo, &yesterday);
+    strftime(startDate, sizeof(startDate), "%Y-%m-%d", &yesterday);
+  }
+  if (!fetchMlbScheduleRange(startDate[0] != '\0' ? startDate : nullptr,
+                            endDate[0] != '\0' ? endDate : nullptr, mlbDoc)) {
     setScheduleLastError("today_fetch_failed");
     return false;
   }
@@ -200,13 +234,20 @@ bool fetchScheduleSnapshot(ScheduleSnapshot& out) {
 }
 
 void fetchIdleContentIfDue() {
-  static uint32_t lastNewsAt = 0;
-  static uint32_t lastStandingsAt = 0;
+  // "Next due" timestamps: success schedules the next fetch 30 minutes out,
+  // while a failure (or an empty parse) retries after 3 minutes — a
+  // transient network wobble must not leave the news page on
+  // "Loading..." for half an hour.
+  static uint32_t newsNextDueAt = 0;
+  static uint32_t standingsNextDueAt = 0;
   const uint32_t now = millis();
   if (getActiveGamePk() != 0) return;
 
-  if (lastNewsAt == 0 || now - lastNewsAt >= 30UL * 60UL * 1000UL) {
-    lastNewsAt = now;
+  const uint32_t OK_INTERVAL = 30UL * 60UL * 1000UL;
+  const uint32_t RETRY_INTERVAL = 3UL * 60UL * 1000UL;
+
+  if ((int32_t)(now - newsNextDueAt) >= 0) {
+    bool haveNews = false;
     if (fetchEspnMlbNews(mlbDoc)) {
       NewsSnapshot news{};
       for (JsonObjectConst article : mlbDoc["articles"].as<JsonArrayConst>()) {
@@ -217,13 +258,17 @@ void fetchIdleContentIfDue() {
                 sizeof(news.headline[0]));
       }
       news.valid = news.count > 0;
-      if (news.valid) mlb_data::publishNews(news);
+      if (news.valid) {
+        mlb_data::publishNews(news);
+        haveNews = true;
+      }
     }
     mlbDoc.clear();
+    newsNextDueAt = now + (haveNews ? OK_INTERVAL : RETRY_INTERVAL);
   }
 
-  if (lastStandingsAt == 0 || now - lastStandingsAt >= 30UL * 60UL * 1000UL) {
-    lastStandingsAt = now;
+  if ((int32_t)(now - standingsNextDueAt) >= 0) {
+    bool haveStandings = false;
     http_fetch::closeSession();
     if (fetchMlbStandings(mlbDoc)) {
       StandingsSnapshot standings{};
@@ -243,9 +288,13 @@ void fetchIdleContentIfDue() {
         }
       }
       standings.valid = standings.divisionCount > 0;
-      if (standings.valid) mlb_data::publishStandings(standings);
+      if (standings.valid) {
+        mlb_data::publishStandings(standings);
+        haveStandings = true;
+      }
     }
     mlbDoc.clear();
+    standingsNextDueAt = now + (haveStandings ? OK_INTERVAL : RETRY_INTERVAL);
   }
 }
 
