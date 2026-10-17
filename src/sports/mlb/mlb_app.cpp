@@ -11,6 +11,7 @@
 #include "mlb_renderer.h"
 #include "mlb_snapshot.h"
 #include "mlb_state.h"
+#include "mlb_teams.h"
 
 // Baseball app: the WAITING/LIVE state machine and sport:: contract
 // implementation (see common/app/sport_api.h). The generic shell in
@@ -43,18 +44,34 @@ bool sHasCurrentSchedule = false;
 NewsSnapshot sCurrentNews{};
 StandingsSnapshot sCurrentStandings{};
 
-// The data task can't decide on its own which game the board should follow.
+// The data task can't decide on its own which game the board should follow
+// (that depends on the preferred-team list, which lives in NVS on core 1).
 // We make that decision here, set activeGamePk via setActiveGamePk(), and
 // the data task reads it on the next iteration. Until core-0 publishes its
 // first schedule snapshot we stay in WAITING (the data task publishes a
 // valid (but possibly empty) schedule within ~5 s).
 
-// Follow the first live game on today's slate — the schedule lists games in
-// start-time order, so that is the earliest game currently in progress.
-// With team selection gone (v2.62), the board simply shows live baseball:
-// when the followed game ends it rolls to the next live game, or returns
-// to waiting mode when none are left.
-int selectLiveGamePk(const ScheduleSnapshot& sch) {
+// Pick the gamePk of the highest-priority preferred team currently live,
+// straight from the other-games snapshot (which lists live games in
+// start-time order and stores team-id digits in the abbrev fields). With
+// no preferred team live, fall back to the first live game on the slate
+// so the board always shows live baseball. This must not depend on any
+// previously-fetched linescore: the data task only polls a linescore once
+// a gamePk is selected here, so deriving the selection FROM a linescore
+// can never bootstrap out of waiting mode.
+int selectLiveGamePk(const ScheduleSnapshot& sch,
+                     const int preferredTeams[3]) {
+  for (int p = 0; p < 3; ++p) {
+    int teamId = preferredTeams[p];
+    if (teamId == 0) continue;
+    for (size_t i = 0; i < sch.otherCount; ++i) {
+      int a = atoi(sch.others[i].awayAbbrev);
+      int h = atoi(sch.others[i].homeAbbrev);
+      if (a == teamId || h == teamId) {
+        return sch.others[i].gamePk;
+      }
+    }
+  }
   return sch.otherCount > 0 ? sch.others[0].gamePk : 0;
 }
 
@@ -67,6 +84,12 @@ const char* name() { return "Baseball Scoreboard"; }
 NetworkBranding branding() {
   return NetworkBranding{name(), NETWORK_AP_SSID, NETWORK_HOSTNAME};
 }
+
+const NetworkTeamOption* teamOptions(size_t& count) {
+  return mlbTeamOptions(count);
+}
+
+const int* defaultPreferredTeams() { return MLB_DEFAULT_PREFERRED_TEAMS; }
 
 void setup() {
   // Initialize hardware: discrete count LEDs + MAX7219 matrices, then the
@@ -96,13 +119,6 @@ void setup() {
 
 void startDataTask() {
   startMlbDataTask();  // core-0 linescore/play/schedule fetches
-}
-
-bool hasInitialData() {
-  // The boot status page holds until the first schedule fetch succeeds —
-  // with the waiting carousel's JSON cache gone (v2.62), fetch success is
-  // the "first data published" signal.
-  return getScheduleFetchSuccesses() > 0;
 }
 
 void tick(const SportTickContext& ctx) {
@@ -173,12 +189,15 @@ void tick(const SportTickContext& ctx) {
   // ---- Decide which game (if any) the board should follow ----
   //
   // The data task on core 0 polls linescore/play for whatever gamePk we
-  // tell it. Selection follows the first live game on the slate (see
-  // selectLiveGamePk); the "other games" list feeds the live ticker.
+  // tell it. Selection follows the preferred teams in priority order (see
+  // selectLiveGamePk), falling back to the first live game on the slate;
+  // the "other games" list feeds the live ticker.
   if (newSchedule && sch.valid) {
     sCurrentSchedule = sch;
     sHasCurrentSchedule = true;
-    int newGamePk = selectLiveGamePk(sch);
+    int preferredTeams[3];
+    getPreferredTeamIds(preferredTeams);
+    int newGamePk = selectLiveGamePk(sch, preferredTeams);
 
     updateOtherGames(sch, newGamePk);
     bool gameChanged = newGamePk != getActiveGamePk();

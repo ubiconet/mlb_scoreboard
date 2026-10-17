@@ -89,13 +89,16 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
 - **Core 0 (FreeRTOS tasks):** the network task (portal/DNS/ArduinoOTA,
   priority 2) and the MLB data task (`sports/mlb/mlb_data_task.cpp`,
   priority 1) do all API calls, JSON parsing, and snapshot publishing.
-- **Game selection (v2.62):** no team preferences — the board follows the
-  FIRST live game on today's slate (schedule order = start-time order) and
-  rolls to the next live game when it ends. The setup portal configures
-  Wi-Fi, timezone, and the idle-clock toggle only. The ESPN news feed,
-  team selection, and the upcoming-games carousel that used to exist were
-  removed in v2.62; waiting mode shows a standby screen with schedule
-  diagnostics.
+- **Game selection (v2.67):** the setup portal's "Favorite Team
+  Priorities" dropdowns (NVS `team1..3`, defaults PHI/ATL/BOS) pick up to
+  three preferred teams; the board follows the highest-priority preferred
+  team with a live game and falls back to the FIRST live game on today's
+  slate (schedule order = start-time order) when none of them are live,
+  rolling to the next live game when the followed game ends. The setup
+  portal configures Wi-Fi, preferred teams, timezone, and the idle-clock
+  toggle. The ESPN news feed and upcoming-games carousel that used to
+  exist were removed in v2.62 (team selection was restored in v2.67);
+  waiting mode shows a standby screen with schedule diagnostics.
 
 ---
 

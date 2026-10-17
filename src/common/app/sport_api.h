@@ -38,6 +38,15 @@ const char* name();
 // generic network service.
 NetworkBranding branding();
 
+// ---- Setup-portal team options ----
+
+// The selectable team list for the portal's preferred-team dropdowns
+// (first entry should be the {0, "-- None --"} sentinel).
+const NetworkTeamOption* teamOptions(size_t& count);
+
+// Preferred-team ids preloaded when NVS has none saved yet.
+const int* defaultPreferredTeams();
+
 // ---- Lifecycle ----
 
 // One-time init: hardware bring-up with this sport's pins (TFT panel, LED
@@ -47,10 +56,6 @@ void setup();
 
 // Create the core-0 feed task. Called after network services start.
 void startDataTask();
-
-// True once the sport has published its first data (the boot status page
-// holds until then, capped by BOOT_MAX_WAIT_FOR_DATA_MS).
-bool hasInitialData();
 
 // Steady-state body, called every loop() pass after the boot/update/network
 // screens have had their chance. Owns game state, rendering, and hardware

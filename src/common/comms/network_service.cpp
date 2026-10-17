@@ -36,9 +36,12 @@ const char DEFAULT_CONFIG[] = R"json({"version":1,"teams":[]})json";
 bool dnsRunning = false;
 bool apUp = false;
 bool otaStarted = false;
-// Branding injected at startNetworkServices() by the app shell (from the
-// sport's config). Empty until then.
+// Branding + team options, injected at startNetworkServices() by the app
+// shell (from the sport's config). Empty until then.
 NetworkBranding netBranding = {"Scoreboard", "SCOREBOARD", "scoreboard"};
+const NetworkTeamOption* netTeamOptions = nullptr;
+size_t netTeamOptionCount = 0;
+int netDefaultTeams[3] = {0, 0, 0};
 String deviceHostname;
 // Per-device setup AP SSID (set once MAC is known) so several
 // unprovisioned boards can be powered at once without SSID collisions.
@@ -51,6 +54,13 @@ String pendingSsid;
 String pendingPassword;
 bool hasPending = false;
 bool clockDisplayEnabled = true;
+
+// Preferred teams (NVS "team1..3", 0 = slot unused), seeded from the
+// sport's defaults on first boot and set from the portal's priority
+// dropdowns. Read by the render core through getPreferredTeamIds().
+int prefTeam1 = 0;
+int prefTeam2 = 0;
+int prefTeam3 = 0;
 
 // ---- Manual mode state (set from the manual web page on this task,
 // read by the render core; small ints/bools, benign races at worst) ----
@@ -321,12 +331,29 @@ void loadSavedNetwork() {
   savedSsid = preferences.getString("ssid", "");
   savedPassword = preferences.getString("password", "");
   clockDisplayEnabled = preferences.getBool("show_clock", true);
+  prefTeam1 = preferences.getInt("team1", netDefaultTeams[0]);
+  prefTeam2 = preferences.getInt("team2", netDefaultTeams[1]);
+  prefTeam3 = preferences.getInt("team3", netDefaultTeams[2]);
   tzString = preferences.getString("tz", FACTORY_DEFAULT_TIMEZONE);
   if (!isValidTzString(tzString.c_str())) {
     tzString = FACTORY_DEFAULT_TIMEZONE;  // unknown/legacy value: fall back
   }
   applyTimezone();
   preferences.end();
+}
+
+String buildTeamOptionsHtml(int selectedId) {
+  String html = "";
+  for (size_t i = 0; i < netTeamOptionCount; i++) {
+    html += "<option value=\"";
+    html += String(netTeamOptions[i].id);
+    html += "\"";
+    if (netTeamOptions[i].id == selectedId) html += " selected";
+    html += ">";
+    html += netTeamOptions[i].label;
+    html += "</option>";
+  }
+  return html;
 }
 
 String htmlEscape(const String& text) {
@@ -463,7 +490,7 @@ h1{margin-top:0;font-size:24px}label{display:block;margin:14px 0 4px;font-weight
 button{margin-top:20px;width:100%;padding:12px;background:#f5c400;border:0;border-radius:4px;font-weight:700;font-size:16px;color:#000;cursor:pointer}.hint{color:#c5d3ee;font-size:14px;line-height:1.4}
 hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
 </style></head><body><main><h1>@@NAME@@ Setup</h1>
-<p class="hint">Configure the Wi-Fi connection and display settings.</p>
+<p class="hint">Configure the Wi-Fi connection, your favorite teams, and display settings.</p>
 <form method="post" action="/save">
 <label for="network">Nearby Wi-Fi Networks</label>
 <select id="network" onchange="ssid.value=this.value"><option value="">Enter network manually</option>)html";
@@ -473,7 +500,18 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
   page += htmlEscape(savedSsid);
   page += R"html(" required maxlength="32" autocomplete="off">
 <label for="password">Wi-Fi Password</label><input id="password" name="password" type="password" maxlength="63" autocomplete="off">
-<p class="hint">Leave the password blank and the network unchanged to save display settings without touching the connection.</p>
+<p class="hint">Leave the password blank and the network unchanged to save team and display settings without touching the connection.</p>
+<hr><h3>Favorite Team Priorities</h3>
+<p class="hint">When a preferred team has a live game, the scoreboard follows it — priority 1 first. With none of them live, the first live game on the slate shows.</p>
+<label for="team1">Priority 1 Team (Primary)</label><select id="team1" name="team1">)html";
+  page += buildTeamOptionsHtml(prefTeam1);
+  page += R"html(</select>
+<label for="team2">Priority 2 Team</label><select id="team2" name="team2">)html";
+  page += buildTeamOptionsHtml(prefTeam2);
+  page += R"html(</select>
+<label for="team3">Priority 3 Team</label><select id="team3" name="team3">)html";
+  page += buildTeamOptionsHtml(prefTeam3);
+  page += R"html(</select>
 <hr><h3>Display Time Zone</h3>
 <label for="tz">Used for game times and the idle clock</label>
 <select id="tz" name="tz">)html";
@@ -485,7 +523,7 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
 <button type="submit">Save & Connect Scoreboard</button></form>
 <hr><h3>Manual Mode</h3>
 <p class="hint">Take manual control: inning, top/bottom, scores, and balls/strikes/outs from a dedicated page. The scoreboard splash screen shows on the TFT while active.</p>
-<p><a style="color:#f5c400" href="/manual">Open Manual Mode &rarr;</a></p>
+<button type="button" onclick="location.href='/manual'">Open Manual Mode</button>
 <hr><h3>Firmware Update</h3>
 <p class="hint">Installed: )html" + String(FIRMWARE_VERSION) + R"html(. Automatic check runs once at boot; use the button below to check on demand.</p>
 <button type="button" style="margin-top:8px" onclick="otaCheck()">Check for Update Now</button>
@@ -504,7 +542,7 @@ else if(otaWaiting&&s.checked&&!s.ok){otaWaiting=false;e.textContent='Check fail
 else if(otaWaiting&&s.checked&&s.ok){otaWaiting=false;e.textContent='No update available - firmware is current.'}
 })},2000);
 </script>
-<hr><p class="hint"><a style="color:#f5c400" href="/update">Upload new firmware (.bin)</a></p></main></body></html>)html";
+</main></body></html>)html";
   page.replace("@@NAME@@", netBranding.deviceName);
   server.send(200, "text/html", page);
 }
@@ -520,6 +558,9 @@ void saveNetwork() {
   pendingSsid = server.arg("ssid");
   pendingPassword = server.arg("password");
   clockDisplayEnabled = server.hasArg("show_clock");
+  if (server.hasArg("team1")) prefTeam1 = server.arg("team1").toInt();
+  if (server.hasArg("team2")) prefTeam2 = server.arg("team2").toInt();
+  if (server.hasArg("team3")) prefTeam3 = server.arg("team3").toInt();
   // Timezone is validated against the option table before it is trusted.
   bool tzChanged = false;
   if (server.hasArg("tz")) {
@@ -542,10 +583,13 @@ void saveNetwork() {
     return;
   }
 
-  // Display preferences always persist; credentials only when they changed.
+  // Display/team preferences always persist; credentials only when they changed.
   preferences.begin("network", false);
   preferences.putBool("show_clock", clockDisplayEnabled);
   preferences.putString("tz", tzString);
+  preferences.putInt("team1", prefTeam1);
+  preferences.putInt("team2", prefTeam2);
+  preferences.putInt("team3", prefTeam3);
   if (networkChanging) {
     preferences.putString("ssid", pendingSsid);
     preferences.putString("password", pendingPassword);
@@ -557,13 +601,14 @@ void saveNetwork() {
   }
 
   if (!networkChanging) {
-    Serial.printf("[NET] Preferences-only save: tz=%s show_clock=%d (network untouched)\n",
-                  tzString.c_str(), clockDisplayEnabled ? 1 : 0);
+    Serial.printf("[NET] Preferences-only save: teams=[%d, %d, %d] tz=%s show_clock=%d (network untouched)\n",
+                  prefTeam1, prefTeam2, prefTeam3, tzString.c_str(),
+                  clockDisplayEnabled ? 1 : 0);
     server.send(200, "text/html", R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Saved</title><style>body{margin:0;background:#061b46;color:#fff;font:16px system-ui,sans-serif}
 main{max-width:420px;margin:8vh auto;padding:28px;background:#0b2b62;border:2px solid #dfe9ff;border-radius:8px;text-align:center}
 </style></head><body><main><h1>Settings Saved</h1>
-<p>Display settings updated — the scoreboard picks them up within a minute.</p>
+<p>Team priorities and display settings updated — the scoreboard picks them up within a minute.</p>
 <p>Wi-Fi settings were not changed.</p>
 <p><a style="color:#f5c400" href="/">Back to configuration</a></p></main></body></html>)html");
     return;
@@ -865,6 +910,14 @@ bool isClockDisplayEnabled() {
   return clockDisplayEnabled;
 }
 
+// The three preferred-team ids (0 = slot unused); read each tick by the
+// render core to pick which live game the board follows.
+void getPreferredTeamIds(int outTeamIds[3]) {
+  outTeamIds[0] = prefTeam1;
+  outTeamIds[1] = prefTeam2;
+  outTeamIds[2] = prefTeam3;
+}
+
 // Effective display timezone as a POSIX TZ string ("EST5EDT,M3.2.0,M11.1.0").
 // Selected in the setup portal, persisted in NVS ("tz"); the factory default
 // only applies before the first selection is saved.
@@ -882,8 +935,18 @@ int  getManualBalls()       { return manualBalls; }
 int  getManualStrikes()     { return manualStrikes; }
 int  getManualOuts()        { return manualOuts; }
 
-void startNetworkServices(const NetworkBranding& branding) {
+void startNetworkServices(const NetworkBranding& branding,
+                          const NetworkTeamOption* teamOptions,
+                          size_t teamOptionCount,
+                          const int defaultPreferredTeams[3]) {
   netBranding = branding;
+  netTeamOptions = teamOptions;
+  netTeamOptionCount = teamOptionCount;
+  if (defaultPreferredTeams != nullptr) {
+    netDefaultTeams[0] = defaultPreferredTeams[0];
+    netDefaultTeams[1] = defaultPreferredTeams[1];
+    netDefaultTeams[2] = defaultPreferredTeams[2];
+  }
   deviceHostname = branding.hostname;
   apSsid = branding.apSsid;
   networkTaskStartedAt = millis();

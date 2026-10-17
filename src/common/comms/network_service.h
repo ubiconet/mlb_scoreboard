@@ -4,8 +4,8 @@
 
 // Network service — Wi-Fi provisioning state machine, captive setup portal,
 // NVS-backed preferences, and development (Arduino)OTA. Fully generic: the
-// sport layer injects its branding at startNetworkServices() time; nothing
-// in here knows a sport.
+// sport layer injects its branding and team-option list at
+// startNetworkServices() time; nothing in here knows a sport.
 
 struct NetworkBranding {
   const char* deviceName;  // e.g. "Baseball Scoreboard" — portal <title>/heading
@@ -13,7 +13,16 @@ struct NetworkBranding {
   const char* hostname;    // base hostname; a per-device suffix is appended
 };
 
-void startNetworkServices(const NetworkBranding& branding);
+// One selectable team in the portal's preferred-team dropdowns.
+struct NetworkTeamOption {
+  int id;
+  const char* label;
+};
+
+void startNetworkServices(const NetworkBranding& branding,
+                          const NetworkTeamOption* teamOptions,
+                          size_t teamOptionCount,
+                          const int defaultPreferredTeams[3]);
 void startNetworkTask();
 // Runs on the main loop; performs any pending display work owned by that core.
 void handleNetworkDisplay();
@@ -34,6 +43,8 @@ const char* getSavedWifiSsid();
 String getDeviceIp();
 // User preference: show the idle clock on the score matrices (NVS "show_clock").
 bool isClockDisplayEnabled();
+// The three preferred-team ids (NVS "team1..3"; 0 = slot unused).
+void getPreferredTeamIds(int outTeamIds[3]);
 // Effective display timezone as a POSIX TZ string, selected in the setup
 // portal (NVS "tz"); used for game times, countdowns, and the idle clock.
 const char* getTzString();
