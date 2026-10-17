@@ -13,7 +13,11 @@ postseason games. Setup (Wi-Fi,
 teams, timezone, clock toggle) happens through an over-the-air captive portal,
 and the board self-updates its firmware from this repo's `releases/`
 folder. (The repo/GitHub name remains `mlb_scoreboard`; the feed is MLB's
-statsapi.)
+statsapi.) A low-battery guard protects the LiPo supply: at power-on the
+pack is checked (optional voltage divider, plus brownout boot-storm
+detection), and when low the board flashes a warning screen and
+deep-sleeps instead of brown-out cycling — resuming by itself once the
+charger is connected.
 
 The repo is also a **sport scoreboard template**: the generic framework
 (`src/common/` + `src/main.cpp`) is sport-agnostic, and everything baseball

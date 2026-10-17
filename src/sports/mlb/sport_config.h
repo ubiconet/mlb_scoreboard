@@ -46,6 +46,34 @@ static const int OUT_1_PIN = 7;
 static const char* NETWORK_AP_SSID = "BASEBALL_SCOREBOARD";
 static const char* NETWORK_HOSTNAME = "baseball-scoreboard";
 
+// ---- Battery power (LiPo + boost converter supply) --------------------------
+// The board runs off a 3.7 V LiPo through a 5 V boost converter. When the
+// pack runs low the boost rail collapses under load and the board brown-out
+// cycles on/off with no indication. The power gate (common/app/power_monitor,
+// driven from main.cpp's boot sequence) handles it two ways:
+//   * BATTERY_SENSE_ENABLED = false (no divider wired yet): a backstop
+//     counts rapid bad boots (brownout resets / boots that died before
+//     BATTERY_HEALTHY_BOOT_MS of uptime); BATTERY_BAD_BOOT_STREAK trips in
+//     a row trigger the low-battery screen + deep sleep. Recovery needs a
+//     power cycle after charging.
+//   * BATTERY_SENSE_ENABLED = true (divider wired, see below): the pack
+//     voltage is read at boot — the ONLY time ADC2 is free, Wi-Fi claims
+//     it afterwards — and at/below BATTERY_LOW_VOLTS the board shows the
+//     low-battery screen and deep-sleeps immediately (no cycling first).
+//     While asleep it silently re-checks every BATTERY_RECHECK_MS and
+//     resumes on its own once the charger lifts the pack past
+//     BATTERY_RESUME_VOLTS.
+// Divider wiring: BAT+ (after the switch / boost input +) --[470k]--
+// BATTERY_SENSE_PIN --[470k]-- GND, with 100 nF across the lower resistor.
+static const bool BATTERY_SENSE_ENABLED = false;   // flip once divider wired
+static const int BATTERY_SENSE_PIN = 17;           // ADC2_CH6, free on this build
+static const float BATTERY_SENSE_DIVIDER = 2.0f;   // (R1 + R2) / R2
+static const float BATTERY_LOW_VOLTS = 3.40f;      // boot reading that trips shutdown
+static const float BATTERY_RESUME_VOLTS = 3.90f;   // re-check resume (charger present)
+static const uint32_t BATTERY_RECHECK_MS = 900000; // silent re-check while asleep (15 min)
+static const uint8_t BATTERY_BAD_BOOT_STREAK = 3;  // bad boots before the backstop trips
+static const uint32_t BATTERY_HEALTHY_BOOT_MS = 90000; // uptime that marks a boot healthy
+
 // ---- UI theme (RGB565) -------------------------------------------------------
 // Shared by the sport renderer AND the generic boot/OTA screens (they include
 // config.h). A new sport overrides these to re-skin the whole UI.

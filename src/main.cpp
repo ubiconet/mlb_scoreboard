@@ -12,6 +12,7 @@
 #include <time.h>
 
 #include "config.h"
+#include "common/app/power_monitor.h"
 #include "common/app/sport_api.h"
 #include "common/comms/network_service.h"
 #include "common/ui/boot_status.h"
@@ -20,11 +21,25 @@
 void setup() {
   Serial.begin(SERIAL_BAUD_RATE);
 
+  // Power gate first, before anything heavy (see power_monitor.h): the
+  // battery reading and the bad-boot journal must happen even on cycles
+  // that die seconds later, and the divider's ADC2 pin is only free
+  // before Wi-Fi starts.
+  power::BootDecision powerDecision = power::earlyBootCheck();
+  if (powerDecision == power::BootDecision::RESLEEP) {
+    power::sleepNow();  // silent recheck found the pack still low; no return
+  }
+
   // Sport bring-up FIRST: hardware init with the sport's pins, boot
   // tests, and the boot splash (its logo artwork belongs to the sport).
   // The splash paints within moments of power-on — nothing in front of
   // it, not even the USB CDC grace period below.
   sport::setup();
+
+  if (powerDecision == power::BootDecision::SHUTDOWN) {
+    // Flash LOW BATTERY, blank the outputs, deep-sleep; no return.
+    power::showLowBatteryAndSleep();
+  }
 
   // No blocking hold here: network services start immediately and connect
   // behind the logo. loop() enforces the minimum splash time instead, so
@@ -56,6 +71,10 @@ void setup() {
 }
 
 void loop() {
+  // Marks this session healthy once it has run long enough that a later
+  // power-off must not count toward the power gate's bad-boot streak.
+  power::noteHealthyUptime();
+
   // Boot sequence: (1) the logo splash holds BOOT_SPLASH_HOLD_MS while
   // the network task connects Wi-Fi behind it — a handshake still in
   // flight at the end of the window EXTENDS the splash (capped by

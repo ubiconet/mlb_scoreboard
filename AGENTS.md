@@ -17,6 +17,15 @@ without surprises.
     `src/common/hal/tft_panel.h`).
   - 2× MAX7219 8×8 LED matrices (DIN=14, CLK=8, CS=16).
   - 7 discrete count LEDs on GPIO 1–7 (balls/strikes/outs).
+  - Power: 3.7 V LiPo → switch → 5 V boost converter. The power gate
+    (`common/app/power_monitor`, battery constants in `sport_config.h`)
+    checks the pack at power-on via an optional divider on GPIO 17
+    (`BATTERY_SENSE_ENABLED`, 470k/470k + 100 nF) — ADC2 is only free
+    before Wi-Fi starts — and/or detects brownout boot storms via an NVS
+    boot journal. Low battery flashes the warning screen
+    (`common/ui/low_battery_screen`) and deep-sleeps the board; with the
+    divider wired it silently re-checks every 15 min and resumes on its
+    own once the charger lifts the pack past the resume threshold.
 - **Firmware:** Arduino-ESP32 framework, PlatformIO build system.
 - **Build envs:**
   - `esp32-s3-devkitc-1` → USB CDC upload.
