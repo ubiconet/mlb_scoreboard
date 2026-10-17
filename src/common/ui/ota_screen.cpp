@@ -1,6 +1,7 @@
 #include <Arduino.h>
 
 #include <Adafruit_GFX.h>
+#include <Adafruit_ST7789.h>
 
 #include "config.h"
 #include "common/hal/tft_panel.h"
@@ -15,45 +16,53 @@ char gOtaTargetVersion[16] = "";
 // stopped, canvas freed); cleared again on stage NONE.
 volatile bool gDisplayParked = false;
 
+// The update screen draws DIRECTLY to the panel — the second sanctioned
+// direct-draw screen after the AP provisioning page. During an install the
+// display is parked (canvas freed so the TLS download fits the heap), so the
+// canvas cannot be trusted to exist here; the panel can.
+void drawOtaProgressBar(Adafruit_ST7789& tft) {
+  tft.drawRoundRect(20, 140, 280, 22, 4, COLOR_MUTED);
+  int fillW = (gOtaProgress > 100 ? 100 : gOtaProgress) * 276 / 100;
+  if (fillW > 0) tft.fillRoundRect(22, 142, fillW, 18, 3, COLOR_LED_RED);
+  char pct[8];
+  snprintf(pct, sizeof(pct), "%d%%", gOtaProgress);
+  tft.setTextColor(COLOR_GOLD);
+  tft.setTextSize(2);
+  drawCenteredText(tft, pct, 160, 176);
+}
+
 void renderOtaUpdateScreen() {
-  GFXcanvas16& canvas = tftPanel.canvas();
-  canvas.fillScreen(COLOR_BG);
+  Adafruit_ST7789& tft = tftPanel.raw();
+  tft.fillScreen(COLOR_BG);
 
-  canvas.setTextColor(COLOR_GOLD);
-  canvas.setTextSize(2);
-  drawCenteredText(canvas, "FIRMWARE UPDATE", 160, 30);
+  tft.setTextColor(COLOR_GOLD);
+  tft.setTextSize(2);
+  drawCenteredText(tft, "FIRMWARE UPDATE", 160, 30);
 
-  canvas.setTextColor(ST77XX_WHITE);
-  canvas.setTextSize(1);
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setTextSize(1);
   if (gOtaTargetVersion[0] != '\0') {
     char line[40];
     snprintf(line, sizeof(line), "Installing %s (from %s)",
              gOtaTargetVersion, FIRMWARE_VERSION);
-    drawCenteredText(canvas, line, 160, 60);
+    drawCenteredText(tft, line, 160, 60);
   }
 
-  if (gOtaStage == OtaStage::DOWNLOADING) {
-    drawCenteredText(canvas, "Downloading - please do not", 160, 92);
-    drawCenteredText(canvas, "turn off the power", 160, 104);
-    // Progress bar
-    canvas.drawRoundRect(20, 140, 280, 22, 4, COLOR_MUTED);
-    int fillW = (gOtaProgress > 100 ? 100 : gOtaProgress) * 276 / 100;
-    if (fillW > 0) canvas.fillRoundRect(22, 142, fillW, 18, 3, COLOR_LED_RED);
-    char pct[8];
-    snprintf(pct, sizeof(pct), "%d%%", gOtaProgress);
-    canvas.setTextColor(COLOR_GOLD);
-    canvas.setTextSize(2);
-    drawCenteredText(canvas, pct, 160, 176);
+  if (gOtaStage == OtaStage::CHECKING) {
+    drawCenteredText(tft, "Preparing to download -", 160, 92);
+    drawCenteredText(tft, "please do not turn off the power", 160, 104);
+  } else if (gOtaStage == OtaStage::DOWNLOADING) {
+    drawCenteredText(tft, "Downloading - please do not", 160, 92);
+    drawCenteredText(tft, "turn off the power", 160, 104);
+    drawOtaProgressBar(tft);
   } else if (gOtaStage == OtaStage::REBOOTING) {
-    drawCenteredText(canvas, "Update installed", 160, 92);
-    drawCenteredText(canvas, "Rebooting...", 160, 104);
+    drawCenteredText(tft, "Update installed", 160, 92);
+    drawCenteredText(tft, "Rebooting...", 160, 104);
   } else {  // FAILED
-    canvas.setTextColor(COLOR_MUTED);
-    drawCenteredText(canvas, "Update failed - check network", 160, 92);
-    drawCenteredText(canvas, "Normal operation continues", 160, 104);
+    tft.setTextColor(COLOR_MUTED);
+    drawCenteredText(tft, "Update failed - check network", 160, 92);
+    drawCenteredText(tft, "Normal operation continues", 160, 104);
   }
-
-  tftPanel.pushFull();
 }
 }  // namespace
 
@@ -78,39 +87,32 @@ bool handleOtaUpdateScreen() {
   }
   if (gOtaStage == OtaStage::CHECKING) {
     // Park: free the render canvas so the updater's TLS handshake gets the
-    // ~150 KB it holds. The panel keeps showing the last pushed frame
-    // (splash / status page) — no redraws until the check finishes.
+    // ~150 KB it holds, then paint the update frame DIRECTLY (the canvas is
+    // gone; the panel is not). The frame tells the user an update has begun
+    // before the progress bar has any bytes to show.
     if (!gDisplayParked) {
       tftPanel.releaseCanvas();
       gDisplayParked = true;
+      renderOtaUpdateScreen();
     }
     return true;
   }
-  // Full-screen redraw on stage change (~1.2 s per push on the software
-  // SPI); progress ticks only repaint the bar/text window so the download
-  // UI stays responsive without monopolizing the render loop.
+  // Full-screen redraw on stage change; progress ticks only repaint the
+  // bar/percentage window so the download UI stays responsive without
+  // monopolizing the render loop (software SPI).
   static OtaStage sLastDrawnStage = OtaStage::NONE;
   static int sLastDrawnPct = -1;
   if (gOtaStage != sLastDrawnStage) {
     sLastDrawnStage = gOtaStage;
     sLastDrawnPct = -1;
-    renderOtaUpdateScreen();  // canvas re-allocates lazily here (post-park)
+    renderOtaUpdateScreen();
     return true;
   }
   if (gOtaStage == OtaStage::DOWNLOADING && gOtaProgress != sLastDrawnPct) {
     sLastDrawnPct = gOtaProgress;
-    GFXcanvas16& canvas = tftPanel.canvas();
-    canvas.fillRect(20, 136, 280, 68, COLOR_BG);
-    canvas.drawRoundRect(20, 140, 280, 22, 4, COLOR_MUTED);
-    int fillW = (gOtaProgress > 100 ? 100 : gOtaProgress) * 276 / 100;
-    if (fillW > 0) canvas.fillRoundRect(22, 142, fillW, 18, 3, COLOR_LED_RED);
-    char pct[8];
-    snprintf(pct, sizeof(pct), "%d%%", gOtaProgress);
-    canvas.setTextColor(COLOR_GOLD);
-    canvas.setTextSize(2);
-    drawCenteredText(canvas, pct, 160, 176);
-    // Row-by-row for the same stride reason as the ticker window.
-    tftPanel.pushRows(20, 136, 280, 68);
+    Adafruit_ST7789& tft = tftPanel.raw();
+    tft.fillRect(20, 136, 280, 68, COLOR_BG);
+    drawOtaProgressBar(tft);
   }
   return true;
 }

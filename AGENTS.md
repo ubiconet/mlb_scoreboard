@@ -173,7 +173,8 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
   `main.cpp` → status/standby screens. TLS
   install details: one reused TLS session for the binary (this AP
   refuses a second fresh handshake moments after the first), progress
-  screen on the best-effort re-allocated canvas, failures leave the
+  screen drawn DIRECT to the panel (the canvas is parked), failures leave
+  the
   current firmware running (a failed install may leave a stale screen
   until reboot — the canvas may not fit back after TLS churn).
 - **Update checks are BOOT-ONLY** (adopted from the NHL port): the
@@ -284,8 +285,11 @@ every `renderBootSplash()` call).
   include it from outside the renderer pair.
 - **All drawing goes through the shared canvas in `TftPanel`** and one
   push call (`pushFull` / `pushBand` / `pushRows`). The only sanctioned
-  direct-panel draw is the AP provisioning screen
-  (`network_service.cpp`, via `tftPanel.raw()`).
+  direct-panel draws are the AP provisioning screen
+  (`network_service.cpp`, via `tftPanel.raw()`) and the OTA update
+  screen (`common/ui/ota_screen.cpp`) — the update screen must render
+  while the display is parked (canvas freed for the TLS download), so
+  it cannot use the canvas.
 - **Pin assignments live in the sport's `sport_config.h`** and are passed
   to the HAL at init (`initLedMatrix(din, clk, cs)`,
   `initCountLeds(pins)`, `tftPanel.begin(...)`). `src/common/` contains
