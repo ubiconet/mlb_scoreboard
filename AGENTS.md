@@ -148,34 +148,35 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
   matches the published manifest version (devices only flash strictly
   newer versions), so **bump `FIRMWARE_VERSION` in `src/config.h` before
   every deploy**. GitHub's raw CDN caches the manifest ~5 min after a push.
-- **Self-update flow** (`src/common/comms/ota_update.cpp`; the TLS
-  handshake only fits the heap with the **display park** of v2.69 — before
-  it, the 2x16 KB mbedTLS SSL buffers (unshrinkable on core 2.0.x,
-  `setBufferSizes` is a 3.x API) plus GitHub's certificate-chain parse
-  landed on a ~15 KB largest heap block and died with
-  `X509 - Allocation of memory failed`): the render core parks before
-  every handshake (`OtaStage::CHECKING` → `handleOtaUpdateScreen` stops
-  rendering and calls `tftPanel.releaseCanvas()`, freeing the ~150 KB
-  canvas; the updater waits for `otaDisplayParked()` before touching
-  TLS). With the canvas freed the handshake gets ~200 KB and succeeds —
-  this also fixed the portal's mid-session "check now". The core-0 data
-  task then fetches the manifest over TLS (the only TLS connection the
-  updater makes; the feeds run plain HTTP — see the note at the top of
-  `sports/mlb/mlb_client.cpp` and `common/comms/http_fetcher.h`). If the
-  manifest version is strictly newer than `FIRMWARE_VERSION`, manifest
-  and binary download over ONE reused TLS session (this AP refuses a
-  second fresh TLS handshake moments after the first) while the renderer
-  shows the "do not turn off" progress screen
-  (`common/ui/ota_screen.cpp`), then the device reboots into the new
-  image. Failures leave the current firmware running. One-off radio
-  drops during the first handshake have been observed (the AP's burst
-  protection); the boot window now allows three attempts and skips
-  attempts while Wi-Fi is re-associating.
+- **Self-update flow** (`src/common/comms/ota_update.cpp`): **hybrid
+  transports (v2.70)**. The manifest check runs over PLAIN HTTP from
+  `raw.githack.com` (the one GitHub-raw mirror that still serves plain
+  HTTP — jsDelivr/statically/ghproxy all 301 to HTTPS): the check must
+  run beside the 153.6 KB render canvas, and a TLS handshake
+  (2x16 KB unshrinkable SSL buffers on core 2.0.x + GitHub's cert-chain
+  parse) does not fit this heap alongside it — measured as
+  `X509 - Allocation of memory failed`, and after any TLS churn the
+  largest heap block stays ~2 KB under the canvas size, freezing the
+  display on a stub. The binary download (manifest's `url` field,
+  raw.githubusercontent.com) still uses TLS because no mirror serves
+  large files over HTTP — it runs ONLY when an update exists, with the
+  **display park** engaging first (`OtaStage::CHECKING` → the render
+  core stops and calls `tftPanel.releaseCanvas()`; the updater waits
+  for `otaDisplayParked()`), and a successful install reboots
+  immediately so the canvas never needs to fit back after TLS churn.
+  The boot splash is drawn DIRECT to the panel (no canvas — see
+  `boot_splash.cpp`) and the first canvas allocation waits behind
+  `otaBootGateReached()` in `main.cpp`, so the boot sequence is:
+  splash (direct) → HTTP manifest check → canvas-backed screens. TLS
+  install details: one reused TLS session for the binary (this AP
+  refuses a second fresh handshake moments after the first), progress
+  screen on the best-effort re-allocated canvas, failures leave the
+  current firmware running (a failed install may leave a stale screen
+  until reboot — the canvas may not fit back after TLS churn).
 - **Update checks are BOOT-ONLY** (adopted from the NHL port): the
   automatic check runs exactly once per power cycle — three attempts in
-  the boot window, then never again mid-session (the fragmented
-  post-feed heap can't fund the handshake, and the AP refuses later
-  fresh TLS connections). To update a running device: power-cycle it,
+  the boot window, then never again mid-session. To update a running
+  device: power-cycle it,
   or use the portal's "check now". The portal button remains available
   and works best right after a boot.
 - **CRITICAL WIRING** — the sport's data task MUST call

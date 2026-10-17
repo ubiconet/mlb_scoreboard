@@ -147,12 +147,11 @@ bool streamBodyToFlash(HTTPClient& http, int total) {
 }  // namespace
 
 void serviceOtaUpdates(uint32_t onlineForMs) {
-  // Check once, early: the TLS handshake needs the still-pristine boot heap
-  // (two ~17 KB contiguous mbedtls buffers; the fragmented post-feed heap's
-  // largest block is too small), which is also why the feed fetches wait
-  // for otaBootGateReached(). The periodic recheck below is best-effort.
-  // A portal-requested check bypasses the pacing (the user is watching),
-  // but still runs on the data task with the heap released.
+  // Check once, early, over plain HTTP (the manifest mirror in
+  // src/config.h): no TLS is involved, so the check runs fine beside the
+  // render canvas and the feed session. The feed fetches still wait for
+  // otaBootGateReached() so the check gets the first network window.
+  // A portal-requested check bypasses the pacing (the user is watching).
   bool requested = sCheckRequested;
   sCheckRequested = false;
   if (!requested) {
@@ -174,30 +173,11 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   if (WiFi.status() != WL_CONNECTED) return;
   sLastCheckAt = millis();
 
-  // Park the display before touching TLS: its render canvas holds ~150 KB
-  // the handshake needs. The 2x16 KB SSL buffers + GitHub's certificate
-  // chain parse measured OVER the remaining ~15 KB largest block and died
-  // with "X509 - Allocation of memory failed"; with the canvas freed the
-  // handshake gets ~200 KB and fits easily. The render loop acks by setting
-  // otaDisplayParked() after it stops rendering and frees the canvas.
-  publishOtaStage(OtaStage::CHECKING, 0);
-  uint32_t parkDeadline = millis() + 3000;
-  while (!otaDisplayParked() && millis() < parkDeadline) delay(10);
-  if (!otaDisplayParked()) {
-    // Render loop wedged in a long frame; skip this attempt, try later.
-    publishOtaStage(OtaStage::NONE, 0);
-    sBootAttempts++;
-    sCheckedOnce = (sBootAttempts >= OTA_BOOT_MAX_ATTEMPTS);
-    return;
-  }
-  DBG_PRINTF("[OTA] display parked: freeHeap=%u maxAlloc=%u\n",
-             (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
-
   // Run alone: drop the feed keep-alive session and let the data-task
   // loop hold the feed fetches until this returns.
   http_fetch::closeSession();
 
-  // Claim the update context BEFORE any TLS connection: it needs a 4 KB
+  // Claim the update context BEFORE any connection: it needs a 4 KB
   // contiguous staging buffer that the fragmented in-session heap can no
   // longer satisfy (the 2.0.x Updater reports that failed malloc as
   // "No Error"). No flash is touched until the first write.
@@ -205,42 +185,21 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
     DBG_PRINTF("[OTA] Update.begin failed: %s (freeHeap=%u maxAlloc=%u)\n",
                Update.errorString(), ESP.getFreeHeap(),
                ESP.getMaxAllocHeap());
-    publishOtaStage(OtaStage::NONE, 0);
     return;
   }
 
-  // ONE TLS session serves both the manifest and, when an update is
-  // needed, the binary: this network path refuses a second fresh TLS
-  // connection opened moments after the first, so a second handshake for
-  // the download reliably failed.
-  // NOTE: the 2x16 KB handshake buffers cannot be shrunk on this core —
-  // WiFiClientSecure::setBufferSizes() only exists in Arduino-ESP32 3.x,
-  // and 2.0.x bakes MBEDTLS_SSL_{IN,OUT}_CONTENT_LEN into the prebuilt
-  // mbedTLS. That's acceptable under the boot-only policy above: the
-  // pristine boot heap funds the handshake, and this is the session's
-  // first TLS connection (the AP refuses later fresh handshakes).
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setHandshakeTimeout(10);  // default 120 s would stall the data task
+  // The manifest comes over PLAIN HTTP (see src/config.h): no TLS, so the
+  // check needs no display park and no pristine heap — it runs beside the
+  // render canvas on any boot.
+  WiFiClient manifestClient;
   HTTPClient http;
-  http.setReuse(true);
-
-  // Un-publish CHECKING only after the TLS session is really gone. With
-  // setReuse(true), http.end() KEEPS the connection open, and the stack
-  // object only frees its ~40 KB of TLS buffers when serviceOtaUpdates
-  // returns — after the render core has already un-parked and tried to
-  // re-allocate the 153.6 KB canvas. That race handed the render core a
-  // null-buffer canvas and a StoreProhibited panic, so stop the client
-  // synchronously and give lwIP a beat before releasing the display.
   auto concludeNoUpdate = [&]() {
     http.end();
-    client.stop();
+    manifestClient.stop();
     Update.abort();
-    delay(250);
-    publishOtaStage(OtaStage::NONE, 0);
   };
 
-  http.begin(client, OTA_MANIFEST_URL);
+  http.begin(manifestClient, OTA_MANIFEST_URL);
   http.setTimeout(10000);
   int httpCode = http.GET();
   DBG_PRINTF("[OTA] manifest -> HTTP %d\n", httpCode);
@@ -249,8 +208,7 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
       readExactBody(http, manifestBuf, sizeof(manifestBuf)) == 0) {
     sLastCheckOk = false;
     sBootAttempts++;
-    // After the boot attempts are exhausted, let the feeds start; the
-    // periodic retry takes over from there.
+    // After the boot attempts are exhausted, let the feeds start.
     sCheckedOnce = (sBootAttempts >= OTA_BOOT_MAX_ATTEMPTS);
     concludeNoUpdate();
     return;
@@ -298,14 +256,37 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
              manifestVersion);
   setOtaTargetVersion(manifestVersion);
 
-  // Same host? Reuse the warm TLS session. Otherwise close it and open a
-  // fresh one (HTTPClient cannot re-target a keep-alive socket itself).
-  String manifestBase(OTA_MANIFEST_URL);
-  int slash = manifestBase.lastIndexOf('/');
-  bool sameHost = url.startsWith(manifestBase.substring(0, slash + 1));
-  if (!sameHost) {
-    http.end();
+  // ---- Install phase: the binary downloads over TLS (raw.githubusercontent
+  // has no plain-HTTP mirror that serves large files). TLS beside the
+  // 153.6 KB render canvas does NOT fit this heap — the 2x16 KB SSL
+  // buffers cannot be shrunk on this core (setBufferSizes is a 3.x API;
+  // 2.0.x bakes MBEDTLS_SSL_{IN,OUT}_CONTENT_LEN into the prebuilt
+  // mbedTLS) — so park the display (canvas freed) for the handshake and
+  // the download. A successful install reboots immediately, so the canvas
+  // never needs to fit back after TLS churn; only a FAILED install
+  // continues the session with a possibly stale screen.
+  http.end();  // release the plain-HTTP manifest socket first
+  publishOtaStage(OtaStage::CHECKING, 0);
+  uint32_t parkDeadline = millis() + 3000;
+  while (!otaDisplayParked() && millis() < parkDeadline) delay(10);
+  if (!otaDisplayParked()) {
+    // Render loop wedged in a long frame; give up on this install try.
+    // The manifest was still fetched+parsed, so the session counts as
+    // checked — the next boot (or portal request) retries the download.
+    Update.abort();
+    publishOtaStage(OtaStage::FAILED, 0);
+    uint32_t failUntil = millis() + 2000;
+    while (millis() < failUntil) delay(50);
+    publishOtaStage(OtaStage::NONE, 0);
+    return;
   }
+  DBG_PRINTF("[OTA] display parked: freeHeap=%u maxAlloc=%u\n",
+             (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap());
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setHandshakeTimeout(10);  // default 120 s would stall the data task
+  http.setReuse(true);  // one warm session serves the whole download
 
   http.setTimeout(15000);  // large binary over lossy Wi-Fi
   http.begin(client, url);
@@ -357,9 +338,8 @@ bool otaEverChecked() { return sCheckedOnce; }
 bool otaLastCheckOk() { return sLastCheckOk; }
 
 bool otaBootGateReached(uint32_t onlineForMs) {
-  // The TLS handshake needs a pristine heap: two ~17 KB contiguous mbedtls
-  // buffers that the fragmented post-feed heap (largest block ~33 KB) can't
-  // satisfy. So the feed fetches must not start until the first OTA check
-  // has either run or been given up on for this session.
+  // The first OTA check owns the early network window (it's cheap plain
+  // HTTP now, but keep the ordering: one predictable boot sequence, and
+  // the feeds must not race it for the keep-alive session).
   return sCheckedOnce || onlineForMs > OTA_BOOT_GATE_TIMEOUT_MS;
 }
