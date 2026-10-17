@@ -164,10 +164,13 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
   core stops and calls `tftPanel.releaseCanvas()`; the updater waits
   for `otaDisplayParked()`), and a successful install reboots
   immediately so the canvas never needs to fit back after TLS churn.
-  The boot splash is drawn DIRECT to the panel (no canvas — see
-  `boot_splash.cpp`) and the first canvas allocation waits behind
-  `otaBootGateReached()` in `main.cpp`, so the boot sequence is:
-  splash (direct) → HTTP manifest check → canvas-backed screens. TLS
+  The render canvas is allocated by the boot splash's first canvas()
+  call, on the pristine PRE-Wi-Fi heap (post-association fragmentation
+  can leave the largest block far below the 153.6 KB the canvas needs
+  — measured 33 KB maxAlloc after feeds start), and the HTTP check
+  runs beside it without any park. Boot sequence: splash (canvas) →
+  plain-HTTP manifest check behind `otaBootGateReached()` in
+  `main.cpp` → status/standby screens. TLS
   install details: one reused TLS session for the binary (this AP
   refuses a second fresh handshake moments after the first), progress
   screen on the best-effort re-allocated canvas, failures leave the

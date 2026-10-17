@@ -101,10 +101,10 @@ void loop() {
   if (onlineSinceMs == 0 && isOnline()) {
     onlineSinceMs = bootNow;
   }
-  // The FIRST canvas allocation waits until the boot OTA check is done:
-  // its TLS handshake needs the ~150 KB the canvas holds (and once freed,
-  // a fragmented heap may never fit the canvas back). The splash was drawn
-  // direct to the panel and covers this window. Provisioning bypasses the
+  // The boot OTA check owns the early network window: hold the splash
+  // (canvas-backed, allocated on the pristine pre-Wi-Fi heap in
+  // sport::setup) until the check completes so the plain-HTTP manifest
+  // fetch goes out before any feed session. Provisioning bypasses the
   // gate — offline there is no check to wait for, and the AP setup page
   // must appear.
   uint32_t onlineFor = (onlineSinceMs != 0) ? bootNow - onlineSinceMs : 0;
