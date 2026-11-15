@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Adafruit_GFX.h>
-#include <Adafruit_ST7789.h>
+#include <Adafruit_ILI9341.h>
 
 // TftPanel — owns the ST7789 TFT panel plus the one shared full-screen render
 // canvas every screen draws into. All rendering rasterizes onto the canvas;
@@ -18,8 +18,18 @@ class TftPanel {
   // pins, leaving a blank screen — software SPI bit-bangs exactly the pins
   // we pass. Do NOT switch to the 3-arg constructor (see repo memory /
   // AGENTS.md). rotation 1 = landscape 320x240 with (0,0) top-left.
+  // backlightPin >= 0 (active HIGH) is driven HIGH once the panel comes up
+  // clean, so the blank/init never shows lit; setBacklight() controls it
+  // afterwards (e.g. dark before a deep sleep). -1 = no firmware control.
+  // misoPin feeds the ILI9341 soft-SPI constructor (write-only display;
+  // -1 when uncommitted).
   void begin(int csPin, int dcPin, int mosiPin, int sclkPin, int resetPin,
-             int nativeWidth, int nativeHeight, int rotation);
+             int nativeWidth, int nativeHeight, int rotation,
+             int backlightPin = -1, int misoPin = -1);
+
+  // Backlight control for boards whose LED line is wired (no-op when the
+  // panel was begun without one).
+  void setBacklight(bool on);
 
   // Double-buffer canvas (153.6 KB at 320x240), lazily allocated ONCE on
   // first use — never from the render loop's hot path. If the heap is
@@ -47,15 +57,16 @@ class TftPanel {
 
   // Direct panel access for one-off screens that draw without the canvas
   // (e.g. the AP provisioning page). Don't use from normal render paths.
-  Adafruit_ST7789& raw();
+  Adafruit_ILI9341& raw();
 
   int width() const { return w_; }
   int height() const { return h_; }
 
  private:
-  Adafruit_ST7789* tft_ = nullptr;
+  Adafruit_ILI9341* tft_ = nullptr;
   int w_ = 0;
   int h_ = 0;
+  int backlightPin_ = -1;
 };
 
 extern TftPanel tftPanel;

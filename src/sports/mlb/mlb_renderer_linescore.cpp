@@ -3,11 +3,13 @@
 #include <Adafruit_ST7789.h>
 
 #include "config.h"
+#include "common/app/power_monitor.h"
 #include "common/comms/network_service.h"
 #include "common/data/time_util.h"
 #include "common/hal/count_leds.h"
 #include "common/hal/led_matrix.h"
 #include "common/hal/tft_panel.h"
+#include "common/ui/battery_indicator.h"
 #include "common/ui/boot_splash.h"
 #include "common/ui/gfx.h"
 #include "mlb_renderer.h"
@@ -59,6 +61,7 @@ struct RenderedFrame {
   bool offenseFirst;
   bool offenseSecond;
   bool offenseThird;
+  int  battQuarters;   // battery gauge state last drawn (-1 = none/hidden)
 };
 RenderedFrame gRendered{};
 bool gHasRendered = false;
@@ -71,6 +74,7 @@ struct ManualDrawn {
   bool topOfInning = true;
   int awayScore = -1, homeScore = -1;
   int balls = -1, strikes = -1, outs = -1;
+  int battQuarters = -1;  // battery gauge state last drawn (-1 = none)
 };
 ManualDrawn md;
 
@@ -560,9 +564,33 @@ void renderManual() {
     canvas.setTextColor(ST77XX_WHITE);
     canvas.setTextSize(3);
     drawCenteredText(canvas, top ? "TOP" : "BOTTOM", 160, 150);
+    {
+      // Battery gauge rides the cached frame's rare repaints; the
+      // quarter-change branch below catches updates between them.
+      uint8_t bq = power::batteryQuarters();
+      if (bq <= 4) {
+        md.battQuarters = (int)bq;
+        drawBatteryIndicator(canvas, 296, 4, bq);
+      } else {
+        md.battQuarters = -1;
+      }
+    }
     tftPanel.pushFull();
     DBG_PRINTF("[DISPLAY] manual inning: %d %s\n", inning,
                top ? "top" : "bottom");
+  } else {
+    // Cached frame: battery quarter changes still redraw their tiny
+    // corner (nothing else on the manual screen refreshes on its own).
+    uint8_t bq = power::batteryQuarters();
+    int bqDrawn = (bq <= 4) ? (int)bq : -1;
+    if (bqDrawn != md.battQuarters) {
+      md.battQuarters = bqDrawn;
+      if (bqDrawn >= 0) {
+        GFXcanvas16& canvas = tftPanel.canvas();
+        drawBatteryIndicator(canvas, 296, 4, (uint8_t)bqDrawn);
+        tftPanel.pushRows(294, 2, 25, 14);
+      }
+    }
   }
 
   // Hardware outputs (scores + 7 count LEDs) update independently of the
@@ -676,6 +704,19 @@ void renderLinescore(const LinescoreSnapshot& ls) {
   // Bottom panel + ticker always re-render (it changes every cycle anyway).
   drawBottomPanel(canvas, ls);
   mlb_render::lastCarouselTime = millis();
+
+  // Battery gauge (gauge-capable boards only — quarters 255/unknown hides
+  // it): drawn in the away card's top-right corner, clear of the AWAY
+  // label and the 64x64 logo below it. Quarter changes are rare, so it
+  // only redraws on a change or a full repaint; the push below carries it.
+  {
+    uint8_t bq = power::batteryQuarters();
+    int bqDrawn = (bq <= 4) ? (int)bq : -1;
+    if (bqDrawn != gRendered.battQuarters || needsFullRepaint) {
+      gRendered.battQuarters = bqDrawn;
+      if (bqDrawn >= 0) drawBatteryIndicator(canvas, 290, 8, (uint8_t)bqDrawn);
+    }
+  }
 
   // Single-pass push to physical TFT display (flicker-free)
   tftPanel.pushFull();

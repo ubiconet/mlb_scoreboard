@@ -9,26 +9,67 @@ without surprises.
 
 ## 1. Project summary
 
-- **Target hardware:** ESP32-S3 DevKitC-1 (4 MB flash).
-- **Peripherals (MLB build):**
+- **Target hardware:** YD-ESP32-S3-family 44-pin DevKitC-1 clone — the
+  same devkit as the NHLScoreboard — **N8R8 module** (8 MB flash, 8 MB
+  octal PSRAM; `qio_opi` memory type, OTA app slots 3.375 MB each, plus a
+  coredump partition). PSRAM sits in the main heap from boot but
+  `BOARD_HAS_PSRAM` is NOT defined, so an Arduino `String` still caps at
+  65,535 bytes. Octal PSRAM permanently reserves GPIO 35–37. Since v2.74
+  (the board switch) a build targets this module only: **an old 4 MB
+  DevKitC-1 board must NOT OTA onto a v2.74+ build** (the qio_opi image
+  won't boot without octal PSRAM) — migrating a board requires a USB
+  flash, which also writes the new partition table.
+- **Peripherals (MLB build — v2.76 rewire pin map):**
   - 2.0" ST7789 TFT, 320×240, **software-SPI** on pins
-    `SCK=13, MOSI=12, CS=9, DC=10, RESET=11` (see the SPI gotcha note in
+    `SCK=8, MOSI=9, CS=12, DC=10, RESET=11`, backlight LED line on
+    `GPIO 18` (driven HIGH after a clean panel init, LOW before the
+    low-battery sleep), MISO on GPIO 17 wired but unused (software SPI
+    writes only). See the SPI gotcha note in
     `memories/repo/hardware_architecture.md` and in
-    `src/common/hal/tft_panel.h`).
-  - 2× MAX7219 8×8 LED matrices (DIN=14, CLK=8, CS=16).
-  - 7 discrete count LEDs on GPIO 1–7 (balls/strikes/outs).
+    `src/common/hal/tft_panel.h`.
+  - 2× MAX7219 8×8 LED matrices (CS=21, CLK=20, DIN=14 — DIN was not on
+    the rewire list; confirm it). **CLK on GPIO 20 is the ESP32-S3's
+    native USB D+ line**: the devkit's native USB-C port can't enumerate
+    on this wiring, so Serial and USB flashing go through the CH343 UART
+    port (`-DARDUINO_USB_CDC_ON_BOOT=0` in platformio.ini).
+  - 7 discrete count LEDs (balls/strikes/outs) on GPIO 42/41/40 (balls
+    1–3), 39/38 (strikes 1–2), 48/47 (outs 1–2) — moved off GPIO 1–7 in
+    the v2.76 rewire so an ADC1 pin is free for the battery divider
+    (bench-confirmed v2.81; GPIO 46 is free/unused). OUT 1 on GPIO 48 is
+    the devkit's onboard-RGB (WS2812) data line repurposed as a plain
+    output — the shell's old pin-48-low RGB hack is gone (a driven line
+    keeps the onboard RGB dark). While the board has no network link all
+    seven flash together (network-down indicator, `setCountLedsBlink`).
+  - MAX98357 I2S audio amp (score sounds, added v2.75; wired v2.76) —
+    `I2S_BCLK=5, I2S_LRC=4, I2S_DIN=6` (the pins the count LEDs vacated).
+    Five synthesized clips (crowd cheer/roar, bat crack, crack+cheer,
+    ballpark organ) live in `sports/mlb/audio_clips.h`, regenerated from
+    `tools/gen_score_sounds.py` + `tools/gen_audio_clips.py` (never edit
+    the header by hand, and include it from exactly ONE TU — it's ~600 KB
+    of PROGMEM arrays).
   - Power: 3.7 V LiPo → switch → 5 V boost converter. The power gate
     (`common/app/power_monitor`, battery constants in `sport_config.h`)
-    checks the pack at power-on via an optional divider on GPIO 17
-    (`BATTERY_SENSE_ENABLED`, 470k/470k + 100 nF) — ADC2 is only free
-    before Wi-Fi starts — and/or detects brownout boot storms via an NVS
-    boot journal. Low battery flashes the warning screen
-    (`common/ui/low_battery_screen`) and deep-sleeps the board; with the
-    divider wired it silently re-checks every 15 min and resumes on its
-    own once the charger lifts the pack past the resume threshold.
+    checks the pack at power-on via an optional divider on
+    `BATTERY_SENSE_PIN` (`BATTERY_SENSE_ENABLED`, 470k/470k + 100 nF)
+    and/or detects brownout boot storms via an NVS boot journal. Low
+    battery flashes the warning screen (`common/ui/low_battery_screen`)
+    and deep-sleeps the board; with the divider wired it silently
+    re-checks every 15 min and resumes on its own once the charger lifts
+    the pack past the resume threshold. The same divider also feeds the
+    RUNTIME GAUGE (v2.75: on-screen battery icon + diagnostics readout)
+    — `BATTERY_SENSE_PIN` defaults to GPIO 7 (ADC1_CH6, the NHL board's
+    gauge pin, free since the LED rewire); the runtime gauge only works
+    on ADC1 pins (1–10) because Wi-Fi kills ADC2. `BATTERY_SENSE_ENABLED`
+    stays false until the physical divider is confirmed on that pin —
+    flipping it with a floating pin risks a spurious low-battery boot
+    shutdown.
+  - Onboard RGB LED (GPIO 48): unused; the shell pins its data line low
+    at boot so the floating WS2812 can't glow.
 - **Firmware:** Arduino-ESP32 framework, PlatformIO build system.
 - **Build envs:**
-  - `esp32-s3-devkitc-1` → USB CDC upload.
+  - `esp32-s3-devkitc-1` → USB upload via the devkit's CH343 UART port
+    (the native USB-C port is unusable since the v2.76 rewire put the
+    matrix CLK on GPIO 20 — the S3's USB D+ line; see sport_config.h).
   - `esp32-s3-devkitc-1-ota` → ArduinoOTA Wi-Fi upload.
 
 ### Template architecture (v2.59 reorg)
@@ -83,11 +124,27 @@ copy `src/sports/mlb` → `src/sports/<sport>`, rewrite the sport folder,
 point the env's src filter + `-I` at it, update `OTA_*` URLs in
 `src/config.h` and `RAW_BASE`/`LATEST_FILE` in `tools/release_deploy.py`.
 
-### Runtime architecture (unchanged by the reorg)
+### Runtime architecture (v2.74 framework sync with the NHL board)
 
 - **Core 1 (Arduino `loop()`):** pure display. The generic shell handles
-  boot/update/network screens, then calls `sport::tick()`; the sport renders
-  from POD snapshots via `take*Snapshot()`. No HTTP on this core.
+  boot/update/network screens (splash → connecting screen → status page /
+  AP instructions), then calls `sport::tick()`; the sport renders from
+  POD snapshots via `take*Snapshot()`. No HTTP on this core.
+- **Wi-Fi connection sequence (v2.74, from the NHL board):** the network
+  service tracks WHY each connect attempt started
+  (`ConnectReason`: STARTUP / LINK_LOST / SETUP_RETRY / NEW_NETWORK) and
+  exposes live progress (`getConnectProgress`) that the connecting screen
+  (`common/ui/connect_screen`) renders — network name, radio step, retry
+  count, time left before setup mode. A connection still in flight after
+  the boot splash shows this screen (the splash no longer extends).
+  `networkLinkUp()` drives the network-down indicator: all 7 count LEDs
+  flash until the link is real (hardware-timer blink in `count_leds`, so
+  blocking pushes can't stall it).
+- **Team-setup hold (v2.74):** with every preferred-team slot set to
+  "None" the board keeps the setup screen (device IP + QR) on the display
+  until the portal saves a team — nothing to follow otherwise. MLB's
+  factory defaults pre-seed PHI/ATL/BOS, so the hold only appears after
+  an explicit all-None save or a factory reset that defaults to zero.
 - **Manual mode (v2.61):** the setup portal's "Manual Mode" page
   (`/manual`, handlers + volatile state in `common/comms/network_service`,
   same pattern as the NHL scoreboard) fully overrides the display: the TFT
@@ -96,9 +153,39 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
   portal-set scores, and the count LEDs follow portal-set
   balls/strikes/outs. `mlb_app.cpp`'s tick short-circuits into
   `renderManual()` while active and repaints the previous screen on exit.
+- **Game demo (v2.74, from the NHL board):** the portal's Diagnostics
+  page (`/diag`) can start a scripted live game — **Blue Jays (home) vs
+  Dodgers (away)** — rendered through the real live renderer (`mlb_app.cpp`'s
+  `startGameDemo`/`advanceGameDemo`): plate appearances resolve every 6 s
+  from a fixed outcome table, the count/builds and base runners advance,
+  runs score, half-innings flip on 3 outs, and each result fires the
+  full-screen at-bat card. Works with NO Wi-Fi (`portalDisplayOverrideActive()`
+  lets portal overrides own the display while provisioning), which also
+  makes the display self-test (`/display/test`) an offline bench check.
+  Exactly one portal mode (demo / manual) owns the scoreboard at a time.
+- **Score sounds (v2.75, audio amp):** the setup portal's "Score Sounds"
+  picker (NVS `sound_id`, five synthesized clips) selects what plays when
+  one of the user's PREFERRED teams scores a run in the followed live
+  game (fallback games with no preferred team stay silent, like the NHL
+  goal horn), on every run in the game demo, and on demand from the
+  picker's Preview button, the diagnostics "Play Test Sound", the full
+  board test, and the manual-mode sound button — all gated by the
+  portal's audio-enable checkbox (NVS `audio_en`). Playback streams from
+  flash over I2S via a dedicated core-0 task (`common/hal/audio.h`), so
+  slow software-SPI canvas pushes can't starve the DMA ring. Sound
+  triggers missed while a portal override owns the display never replay
+  in a burst (baseline resets on override exit).
+- **Battery gauge (v2.75):** on gauge-capable boards (ADC1 divider, see
+  the power section above) a quarter-step battery icon sits top-right on
+  the waiting, live, demo, and manual screens, and the diagnostics page
+  shows live volts/percent; the full board test verifies the sense
+  circuit against a plausible 1S LiPo window.
 - **Core 0 (FreeRTOS tasks):** the network task (portal/DNS/ArduinoOTA,
   priority 2) and the MLB data task (`sports/mlb/mlb_data_task.cpp`,
   priority 1) do all API calls, JSON parsing, and snapshot publishing.
+  The data task also runs `health::serviceHealthHeartbeat()` (SB_DEBUG
+  heap/stack trend line) and `power::serviceBatteryMonitor()` (runtime
+  battery gauge sample every 30 s).
 - **Game selection (v2.67):** the setup portal's "Favorite Team
   Priorities" dropdowns (NVS `team1..3`, defaults PHI/ATL/BOS) pick up to
   three preferred teams; the board follows the highest-priority preferred
@@ -106,9 +193,13 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
   slate (schedule order = start-time order) when none of them are live,
   rolling to the next live game when the followed game ends. The setup
   portal configures Wi-Fi, preferred teams, timezone, and the idle-clock
-  toggle. The ESPN news feed and upcoming-games carousel that used to
-  exist were removed in v2.62 (team selection was restored in v2.67);
-  waiting mode shows a standby screen with schedule diagnostics.
+  toggle; it also links the Diagnostics page (feed status, stability/
+  crash summary, display test, game demo, factory reset) and a Support
+  section (email + website). Clearing the network name and saving
+  disconnects the board back onto its setup AP. The ESPN news feed and
+  upcoming-games carousel that used to exist were removed in v2.62 (team
+  selection was restored in v2.67); waiting mode shows a standby screen
+  with schedule diagnostics.
 
 ---
 
@@ -180,9 +271,17 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
 - **Update checks are BOOT-ONLY** (adopted from the NHL port): the
   automatic check runs exactly once per power cycle — three attempts in
   the boot window, then never again mid-session. To update a running
-  device: power-cycle it,
-  or use the portal's "check now". The portal button remains available
-  and works best right after a boot.
+  device: power-cycle it. Since v2.74 the portal's Firmware Update
+  section matches the NHL board: installed version, live `/ota/status`
+  polling, the latest-binary download link, and the manual `/update`
+  upload page — the "check now" button is gone (`requestOtaCheckNow()`
+  remains in `ota_update.cpp` for a future trigger).
+- **The OTA manifest buffer must fit the whole manifest** (NHL lesson,
+  applied in v2.74): `sManifestBuf` in `ota_update.cpp` is a 2 KB static
+  buffer and `readExactBody()` refuses any body larger than it — an
+  undersized buffer silently fails EVERY check the moment the manifest
+  grows a field. If the manifest ever approaches 2 KB, grow the buffer
+  in the same change.
 - **CRITICAL WIRING** — the sport's data task MUST call
   `serviceOtaUpdates(onlineFor)` every loop pass, hold feeds while
   `otaUpdateInProgress()`, and gate the first feed fetch behind
@@ -307,18 +406,33 @@ After any non-trivial change:
 1. `pio run --environment esp32-s3-devkitc-1` — must compile with no
    errors. Warnings about unused variables/functions are okay but should
    be addressed before bumping the firmware version. Also sanity-check
-   flash size against the 1.5 MB OTA partition (the build prints the
-   percentage; v2.63 sits ~90.4%).
-2. Upload to the device (OTA or USB).
+   flash size against the 3.375 MB OTA app slots (the build prints the
+   percentage; v2.74 sits ~42%).
+2. Upload to the device (OTA or USB — a board moving from the pre-v2.74
+   4 MB DevKitC build can ONLY be migrated over USB: the qio_opi image
+   and the new partition table both need a wired flash, and an old board
+   must never OTA onto a v2.74+ build).
 3. Confirm via Serial Monitor (with `-DSB_DEBUG=1`) or the on-screen
    diagnostics that:
-   - The boot splash shows the new version string.
+   - The boot splash shows the new version string, and the boot banner
+     reports the reset reason + last crash (health).
+   - With Wi-Fi unreachable, the count LEDs all flash (network-down
+     indicator) and the connecting screen shows the network name and
+     countdown before setup mode takes over.
    - The waiting standby screen, when no game is live, shows the
      diagnostic line `sched att:N ok:M err:ok http:200` — this confirms
-     the data task is fetching the schedule.
+     the data task is fetching the schedule (also visible on the
+     portal's Diagnostics page as live feed status).
    - The MAX7219 matrices still show the live time when the device is
      in waiting mode (hour on home, minute on away).
    - Count LEDs (balls/strikes/outs) update during a live game.
+   - The portal's Diagnostics page: "Run Display Test" cycles the
+     matrices/LEDs/screen; "Start Game Demo" plays the Blue Jays vs
+     Dodgers scripted game on every output (works with no Wi-Fi too);
+     "Play Test Sound" plays the selected score sound once the amp is
+     wired (silently no-ops until then).
+   - The setup page's Score Sounds picker previews each clip without
+     saving; the audio-enable checkbox silences every trigger.
 
 ---
 

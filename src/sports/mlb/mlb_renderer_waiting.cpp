@@ -3,10 +3,12 @@
 #include <Adafruit_ST7789.h>
 
 #include "config.h"
+#include "common/app/power_monitor.h"
 #include "common/hal/count_leds.h"
 #include "common/hal/led_matrix.h"
 #include "common/hal/tft_panel.h"
 #include "common/data/time_util.h"
+#include "common/ui/battery_indicator.h"
 #include "common/ui/gfx.h"
 #include "mlb_renderer.h"
 #include "mlb_renderer_internal.h"
@@ -119,6 +121,11 @@ void drawIdlePage() {
       canvas.print(team.losses);
     }
   }
+  // Battery gauge (gauge-capable boards only — quarters 255/unknown hides
+  // it). The idle carousel repaints fully every few seconds, so quarter
+  // changes land on the next page flip without dedicated tracking.
+  uint8_t bq = power::batteryQuarters();
+  if (bq <= 4) drawBatteryIndicator(canvas, 296, 4, bq);
   tftPanel.pushFull();
 }
 }  // namespace

@@ -47,6 +47,14 @@ const NetworkTeamOption* teamOptions(size_t& count);
 // Preferred-team ids preloaded when NVS has none saved yet.
 const int* defaultPreferredTeams();
 
+// ---- Setup-portal sound options ----
+
+// Selectable sounds (e.g. crowd cheers, bat crack) for the portal's sound
+// picker; the sport maps each id to one of its audio clips. An empty list
+// hides the picker.
+const NetworkSoundOption* soundOptions(size_t& count);
+int defaultSoundId();
+
 // ---- Lifecycle ----
 
 // One-time init: hardware bring-up with this sport's pins (TFT panel, LED
@@ -61,5 +69,15 @@ void startDataTask();
 // screens have had their chance. Owns game state, rendering, and hardware
 // updates for sport content.
 void tick(const SportTickContext& ctx);
+
+// ---- Feed diagnostics ----
+
+// JSON fragment (no outer braces) describing the sport's feed state for
+// the portal's /status endpoint: schedule fetch attempts/successes, the
+// last error and HTTP code, the followed game id, Wi-Fi signal, and the
+// device clock. Wired into the status JSON by main.cpp via the
+// network-service status hook. Empty string is fine for sports without
+// feeds.
+String feedDiagnosticsJson();
 
 }  // namespace sport

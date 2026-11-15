@@ -107,27 +107,10 @@ void setMatrixBit(uint8_t rows[8], int r, int c, uint8_t value) {
   }
 }
 
-// Physical mounting correction: home matrix is installed upside-down.
-void rotateMatrix180(uint8_t rows[8]) {
-  uint8_t result[8] = {0};
-  for (int r = 0; r < 8; r++) {
-    for (int c = 0; c < 8; c++) {
-      setMatrixBit(result, r, c, getMatrixBit(rows, 7 - r, 7 - c));
-    }
-  }
-  memcpy(rows, result, 8);
-}
-
-// Physical mounting correction: away matrix is installed rotated 90 degrees clockwise.
-void rotateMatrix90Ccw(uint8_t rows[8]) {
-  uint8_t result[8] = {0};
-  for (int r = 0; r < 8; r++) {
-    for (int c = 0; c < 8; c++) {
-      setMatrixBit(result, r, c, getMatrixBit(rows, c, 7 - r));
-    }
-  }
-  memcpy(rows, result, 8);
-}
+// Physical mounting corrections, from the v2.76 rewire bench test:
+// BOTH matrices mount upright (home verified v2.77, away verified v2.78
+// after trying 180/CCW/CW corrections) — no rotation is applied to
+// either chain's glyph frames.
 
 // Convert integer score (0-99) into 8 row bytes for an 8x8 matrix. A negative
 // score (MAX7219_SCORE_BLANK) leaves the matrix dark for "no active game".
@@ -155,8 +138,7 @@ void scoreToMatrixRows(int score, bool useLargeFont, uint8_t rows[8]) {
 }
 
 void writeMatrixRows(uint8_t awayRows[8], uint8_t homeRows[8]) {
-  rotateMatrix180(homeRows);
-  rotateMatrix90Ccw(awayRows);
+  // Both modules mount upright — glyph rows go out unrotated.
   for (uint8_t row = 0; row < 8; row++) {
     uint8_t reg = MAX7219_REG_DIGIT0 + row;
     max7219Send(reg, homeRows[row], reg, awayRows[row]);
@@ -195,6 +177,23 @@ void setMax7219Scores(int awayScore, int homeScore) {
   scoreToMatrixRows(awayScore, useLargeFont, awayRows);
   scoreToMatrixRows(homeScore, useLargeFont, homeRows);
   writeMatrixRows(awayRows, homeRows);
+}
+
+// Display-test register helpers (the portal's screen self-test): all LEDs
+// on ONE matrix (1 = away, 2 = home) or on both at once, bypassing digit
+// data. The display-test mode overrides the intensity and scan registers,
+// so the lit pattern is full-brightness — exactly what a wiring check
+// wants. Restoring writes digit data again (callers repaint), so only the
+// `on` transitions touch the register here.
+void setMax7219PositionTest(int position, bool on) {
+  const uint8_t value = on ? 0x01 : 0x00;
+  const uint8_t away = (position == 1) ? value : 0x00;
+  const uint8_t home = (position == 2) ? value : 0x00;
+  max7219Send(MAX7219_REG_DISPLAYTEST, home, MAX7219_REG_DISPLAYTEST, away);
+}
+
+void setMax7219DisplayTestAll(bool on) {
+  max7219SendAll(MAX7219_REG_DISPLAYTEST, on ? 0x01 : 0x00);
 }
 
 void updateMax7219Clock(bool enabled) {
@@ -240,8 +239,6 @@ void runMax7219BootTest() {
     homeRows[row] = (LETTER_H_5X7[row] & 0x1F) << 1; // Center 5 bits in 8 cols
     awayRows[row] = (LETTER_A_5X7[row] & 0x1F) << 1;
   }
-  rotateMatrix180(homeRows);
-  rotateMatrix90Ccw(awayRows);
 
   for (uint8_t row = 0; row < 8; row++) {
     uint8_t reg = MAX7219_REG_DIGIT0 + row;

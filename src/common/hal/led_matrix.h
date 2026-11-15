@@ -12,6 +12,11 @@ static const int MAX7219_SCORE_BLANK = -1;
 
 void initLedMatrix(int dinPin, int clkPin, int csPin);
 void setMax7219Scores(int awayScore, int homeScore);
+// Display-test register helpers (the portal's screen self-test): all LEDs
+// on ONE matrix (position 1 = away, 2 = home) or on both at once,
+// bypassing digit data at full brightness.
+void setMax7219PositionTest(int position, bool on);
+void setMax7219DisplayTestAll(bool on);
 // Shows or clears local time: hour on the home matrix, minutes on the away
 // matrix. Refreshes once per minute; waits for NTP before first display.
 void updateMax7219Clock(bool enabled);

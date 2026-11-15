@@ -4,6 +4,8 @@
 #include <WiFi.h>
 
 #include "config.h"
+#include "common/app/health.h"
+#include "common/app/power_monitor.h"
 #include "common/comms/http_fetcher.h"
 #include "common/comms/network_service.h"
 #include "common/comms/ota_update.h"
@@ -328,6 +330,8 @@ void mlbDataTaskLoop(void*) {
         http_fetch::releaseBodyBuffer();
       }
       serviceOtaUpdates(onlineFor);
+      health::serviceHealthHeartbeat();  // SB_DEBUG builds only
+      power::serviceBatteryMonitor();    // runtime gauge (gauge-capable boards)
       if (otaUpdateInProgress()) {
         vTaskDelay(pdMS_TO_TICKS(100));
         continue;

@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <Adafruit_ST77xx.h>  // ST77XX_* color constants (panel-type agnostic)
 #include <ArduinoJson.h>
 #include <ArduinoOTA.h>
 #include <DNSServer.h>
@@ -14,6 +15,8 @@
 #include <time.h>
 
 #include "config.h"
+#include "common/app/health.h"
+#include "common/app/power_monitor.h"
 #include "common/ui/ota_screen.h"
 #include "ota_update.h"
 
@@ -36,8 +39,13 @@ const char DEFAULT_CONFIG[] = R"json({"version":1,"teams":[]})json";
 bool dnsRunning = false;
 bool apUp = false;
 bool otaStarted = false;
+// Optional sport-supplied JSON fragment appended to /status by the app
+// shell (main.cpp wires it to sport::feedDiagnosticsJson — common code
+// never reaches into the sport layer directly).
+String (*netStatusExtra)() = nullptr;
+
 // Branding + team options, injected at startNetworkServices() by the app
-// shell (from the sport's config). Empty until then.
+// shell (from the sport's config/tables). Empty until then.
 NetworkBranding netBranding = {"Scoreboard", "SCOREBOARD", "scoreboard"};
 const NetworkTeamOption* netTeamOptions = nullptr;
 size_t netTeamOptionCount = 0;
@@ -72,6 +80,29 @@ volatile bool manualTopOfInning = true;
 volatile int  manualBalls = 0;
 volatile int  manualStrikes = 0;
 volatile int  manualOuts = 0;
+// Portal-triggered game demo (diagnostics page) — the sport layer scripts
+// a simulated game while this is set.
+volatile bool gameDemoMode = false;
+
+// Display-test request from the portal (see consumeDisplayTestRequest()).
+// Volatile: set by the network task's web handler, consumed on the render
+// core's tick.
+volatile bool displayTestRequested = false;
+
+// Audio-test request from the portal (see consumeAudioTestRequest()).
+// audioTestSoundId carries the picker's preview id; -1 means "the saved
+// selection". The flag/id pair is written before the bool flips, so the
+// render core only ever sees a complete pair.
+volatile bool audioTestRequested = false;
+volatile int audioTestSoundId = -1;
+
+// Sound-picker options injected by the sport (may be null/empty — the
+// portal section hides itself) plus the NVS-backed selection.
+const NetworkSoundOption* netSoundOptions = nullptr;
+size_t netSoundOptionCount = 0;
+int netDefaultSoundId = 0;
+int selectedSoundId = 0;
+bool audioEnabled = true;
 
 int clampManualScore(int v) { return v < 0 ? 0 : (v > 99 ? 99 : v); }
 int clampManualCount(int v, int maxv) { return v < 0 ? 0 : (v > maxv ? maxv : v); }
@@ -96,7 +127,7 @@ const TzOption TZ_OPTIONS[] = {
   {"Alaska (Anchorage)",                     "AKST9AKDT,M3.2.0,M11.1.0"},
   {"Hawaii (Honolulu)",                      "HST10"},
   {"Canada Atlantic (Halifax)",              "AST4ADT,M3.2.0,M11.1.0"},
-  {"Canada Newfoundland",                    "NST3:30NDT,M3.2.0,M11.1.0"},
+  {"Canada Newfoundland",                    "NST3:30NDT,M3.5.0/1,M10.5.0"},
   {"UK & Ireland",                           "GMT0BST,M3.5.0/1,M10.5.0"},
   {"Central Europe (Paris/Berlin)",          "CET-1CEST,M3.5.0,M10.5.0/3"},
   {"Eastern Europe (Athens/Helsinki)",       "EET-2EEST,M3.5.0/3,M10.5.0/4"},
@@ -151,6 +182,15 @@ uint32_t lastReconnectAt = 0;
 uint32_t lastDebugAt = 0;
 wl_status_t lastLoggedWiFiStatus = WL_NO_SHIELD;
 bool setupScreenVisible = false;
+
+// The connection attempt in flight, written here on the network task and
+// read by the connecting screen on the render core (getConnectProgress).
+portMUX_TYPE connectLock = portMUX_INITIALIZER_UNLOCKED;
+uint32_t connectAttemptId = 0;
+ConnectReason connectReason = ConnectReason::STARTUP;
+char connectSsid[33] = "";
+uint16_t connectRetries = 0;
+uint32_t connectStartedAt = 0;
 // Portal priority mode: while someone is actively using the setup pages,
 // background work pauses so the web server gets the core and the radio to
 // itself (page loads over this device's marginal Wi-Fi stall otherwise).
@@ -276,6 +316,10 @@ void enterOnline() {
     hasPending = false;
   }
   stopPortalInfrastructure();
+  // The setup AP is gone, so nobody can still be configuring through it:
+  // feeds must start now, not after the activity window the setup pages'
+  // polling kept re-arming until the moment the link came up.
+  portalActiveUntil = 0;
   startArduinoOTA();
   requestSetupRedraw(SETUP_ONLINE_PORTAL, WiFi.localIP());
   Serial.printf("[NET] Online: ip=%s rssi=%d gateway=%s\n",
@@ -293,6 +337,13 @@ void enterProvisioning() {
     WiFi.softAP(apSsid.c_str(), NETWORK_AP_PASSWORD);
     apUp = true;
     startPortalInfrastructure();
+    // Prime the network list before the first phone connects: the async
+    // scan finishes (~2-3 s) while the user is still joining the AP, so
+    // the setup page's dropdown is populated on first load. Without this
+    // the first scan waits out NETWORK_SCAN_REFRESH_MS since boot.
+    // refreshScanCache() collects the result as usual.
+    WiFi.scanNetworks(true, true);
+    scanActive = true;
   }
   requestSetupRedraw(SETUP_AP_INSTRUCTIONS, WiFi.softAPIP());
   Serial.println("[NET] Provisioning: waiting for portal credentials");
@@ -302,16 +353,24 @@ void enterProvisioning() {
                 WiFi.softAPIP().toString().c_str());
 }
 
-void enterConnecting() {
-  state = CONNECTING;
-  stateStartedAt = millis();
+void enterConnecting(const String& ssid, ConnectReason reason) {
+  uint32_t now = millis();
+  portENTER_CRITICAL(&connectLock);
+  ++connectAttemptId;
+  connectReason = reason;
+  strlcpy(connectSsid, ssid.c_str(), sizeof(connectSsid));
+  connectRetries = 0;
+  connectStartedAt = now;
+  portEXIT_CRITICAL(&connectLock);
+  stateStartedAt = now;
   lastProbeAt = 0;
-  lastReconnectAt = millis();
-  Serial.printf("[NET] Connecting to SSID '%s'\n", savedSsid.c_str());
+  lastReconnectAt = now;
+  state = CONNECTING;
+  Serial.printf("[NET] Connecting to SSID '%s'\n", ssid.c_str());
   requestSetupRedraw(SETUP_CONNECTING, WiFi.softAPIP());
 }
 
-void tryReconnectWithSavedNetwork() {
+void tryReconnectWithSavedNetwork(ConnectReason reason) {
   if (savedSsid.isEmpty()) {
     enterProvisioning();
     return;
@@ -323,7 +382,7 @@ void tryReconnectWithSavedNetwork() {
   // the extra ~40 mA is irrelevant.
   WiFi.setSleep(false);
   WiFi.begin(savedSsid.c_str(), savedPassword.c_str());
-  enterConnecting();
+  enterConnecting(savedSsid, reason);
 }
 
 void loadSavedNetwork() {
@@ -331,6 +390,8 @@ void loadSavedNetwork() {
   savedSsid = preferences.getString("ssid", "");
   savedPassword = preferences.getString("password", "");
   clockDisplayEnabled = preferences.getBool("show_clock", true);
+  audioEnabled = preferences.getBool("audio_en", true);
+  selectedSoundId = preferences.getInt("sound_id", netDefaultSoundId);
   prefTeam1 = preferences.getInt("team1", netDefaultTeams[0]);
   prefTeam2 = preferences.getInt("team2", netDefaultTeams[1]);
   prefTeam3 = preferences.getInt("team3", netDefaultTeams[2]);
@@ -389,7 +450,14 @@ void refreshScanCache() {
     scanActive = false;
     lastScanAt = millis();
   }
-  if (!scanActive && state != ONLINE && millis() - lastScanAt > NETWORK_SCAN_REFRESH_MS) {
+  // Scans run freely while the board isn't connected. Once ONLINE they
+  // run only while someone is using the portal: the scan hops the radio
+  // across channels for ~2-3 s, which starves the link — acceptable
+  // during configuration (feeds already pause for the portal window),
+  // never in the background, and never mid-OTA-download.
+  if (!scanActive && !otaUpdateInProgress() &&
+      millis() - lastScanAt > NETWORK_SCAN_REFRESH_MS &&
+      (state != ONLINE || portalEngaged())) {
     WiFi.scanNetworks(true, true);
     scanActive = true;
   }
@@ -398,7 +466,7 @@ void refreshScanCache() {
 void renderAccessPointInstructions(const String& portalAddress, bool stationConnected) {
   // Direct panel draw (no canvas): this screen replaces everything during
   // provisioning and nothing else renders while it is up.
-  Adafruit_ST7789& display = tftPanel.raw();
+  Adafruit_ILI9341& display = tftPanel.raw();
   String portalUrl = "http://" + portalAddress + "/";
 
   display.fillScreen(0x012B);
@@ -423,7 +491,11 @@ void renderAccessPointInstructions(const String& portalAddress, bool stationConn
     display.setCursor(8, 105);
     display.print("2. Scan QR or open URL");
     display.setCursor(8, 120);
-    display.print("to adjust team settings.");
+    display.print("and pick your teams.");
+    display.setCursor(8, 145);
+    display.print("3. Save - the scoreboard");
+    display.setCursor(8, 160);
+    display.print("starts right away.");
   } else {
     display.print("1. Connect to:");
     display.setTextSize(2);
@@ -438,20 +510,50 @@ void renderAccessPointInstructions(const String& portalAddress, bool stationConn
 
     display.setTextSize(1);
     display.setCursor(8, 125);
-    display.print("2. Scan QR or open:");
+    display.print("2. Scan QR to join Wi-Fi");
     display.setCursor(8, 139);
-    display.print(portalAddress);
+    display.print("then open: " + portalAddress);
     display.setCursor(8, 165);
     display.print("3. Enter Wi-Fi settings");
+    if (!savedSsid.isEmpty()) {
+      // A board with saved Wi-Fi only lands here when that network can't
+      // be reached; it keeps retrying (NETWORK_PROVISIONING_RETRY_MS).
+      display.setTextColor(0xFD20); // Gold
+      display.setCursor(8, 198);
+      display.print("Saved Wi-Fi: " + savedSsid);
+      display.setTextColor(ST77XX_WHITE);
+      display.setCursor(8, 212);
+      display.print("Not reachable - retrying it every minute");
+    }
   }
 
-  // QR always links to this screen's portal address (AP portal or device LAN IP).
-  uint8_t qrData[qrcode_getBufferSize(2)];
+  // Online: QR links to the portal (device LAN IP). Setup screen: QR
+  // carries the AP credentials instead — a WIFI: payload that joins the
+  // phone to the provisioning AP, after which the captive-portal popup
+  // opens the setup page (the wildcard DNS server points everything here).
+  // The 41-byte payload (stock SSID + password) needs version 3 — V3-L
+  // holds 53 bytes, V2's 32 is too small. Bump the version if the AP
+  // strings ever grow past that; qrcode_initText silently renders an
+  // empty code when the payload doesn't fit.
+  String qrPayload;
+  const uint8_t qrVersion = stationConnected ? 2 : 3;
+  if (stationConnected) {
+    qrPayload = portalUrl;
+  } else {
+    qrPayload = "WIFI:T:WPA;S:";
+    qrPayload += apSsid;
+    qrPayload += ";P:";
+    qrPayload += NETWORK_AP_PASSWORD;
+    qrPayload += ";;";
+  }
+  uint8_t qrData[qrcode_getBufferSize(3)];
   QRCode qrCode;
-  qrcode_initText(&qrCode, qrData, 2, ECC_LOW, portalUrl.c_str());
+  qrcode_initText(&qrCode, qrData, qrVersion, ECC_LOW, qrPayload.c_str());
 
   const int scale = 4;
-  const int left = 208;
+  // The 29-module V3 code at scale 4 spans 116 px; shift it left so the
+  // quiet-zone border still ends inside the 320-px panel (V2 keeps 208).
+  const int left = stationConnected ? 208 : 200;
   const int top = 65;
   display.fillRect(left - 4, top - 4, (qrCode.size * scale) + 8, (qrCode.size * scale) + 8, ST77XX_WHITE);
   for (uint8_t y = 0; y < qrCode.size; y++) {
@@ -479,10 +581,20 @@ void redirectToPortal() {
   server.send(302, "text/plain", "");
 }
 
+// Options-only fragment for the setup page's network dropdown. The page
+// polls this after load so a scan that finishes post-render still fills
+// the list without reloading. scanOptionsHtml is built in
+// refreshScanCache() on this same task — no cross-core access.
+void serveNetworks() {
+  markPortalActivity();
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "text/html", scanOptionsHtml);
+}
+
 void servePortal() {
   markPortalActivity();
-  server.sendHeader("Cache-Control", "max-age=300");
-  String page = R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+  server.sendHeader("Cache-Control", "no-store");
+  String page = R"html(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>@@NAME@@ Setup</title><style>
 body{margin:0;background:#061b46;color:#fff;font:16px system-ui,sans-serif}
 main{max-width:440px;margin:5vh auto;padding:24px;background:#0b2b62;border:2px solid #dfe9ff;border-radius:8px}
@@ -494,15 +606,21 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
 <form method="post" action="/save">
 <label for="network">Nearby Wi-Fi Networks</label>
 <select id="network" onchange="ssid.value=this.value"><option value="">Enter network manually</option>)html";
-  page += scanOptionsHtml;
+  if (scanOptionsHtml.isEmpty()) {
+    // Scan still running at first render; the script below replaces this
+    // placeholder when /networks returns results.
+    page += R"html(<option disabled>Scanning for networks&hellip;</option>)html";
+  } else {
+    page += scanOptionsHtml;
+  }
   page += R"html(</select>
 <label for="ssid">Wi-Fi Network Name</label><input id="ssid" name="ssid" value=")html";
   page += htmlEscape(savedSsid);
-  page += R"html(" required maxlength="32" autocomplete="off">
-<label for="password">Wi-Fi Password</label><input id="password" name="password" type="password" maxlength="63" autocomplete="off">
-<p class="hint">Leave the password blank and the network unchanged to save team and display settings without touching the connection.</p>
+  page += R"html(" maxlength="32" autocomplete="off">
+<label for="password">Wi-Fi Password</label><input id="password" name="password" type="text" maxlength="63" autocomplete="off">
+<p class="hint">Leave the password blank and the network unchanged to save team and display settings without touching the connection. Clear the network name and save to disconnect the scoreboard — its setup access point comes back.</p>
 <hr><h3>Favorite Team Priorities</h3>
-<p class="hint">When a preferred team has a live game, the scoreboard follows it — priority 1 first. With none of them live, the first live game on the slate shows.</p>
+<p class="hint">Pick at least one team &mdash; until you do, the scoreboard stays on its setup screen. When a preferred team has a live game, the scoreboard follows it — priority 1 first; with none of them live, the first live game on the slate shows.</p>
 <label for="team1">Priority 1 Team (Primary)</label><select id="team1" name="team1">)html";
   page += buildTeamOptionsHtml(prefTeam1);
   page += R"html(</select>
@@ -520,26 +638,71 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
 <hr><label style="display:flex;align-items:center;gap:10px" for="show-clock"><input style="width:auto" id="show-clock" name="show_clock" type="checkbox" value="1")html";
   if (clockDisplayEnabled) page += " checked";
   page += R"html(>Display current time on score boards when no game is live</label>
-<button type="submit">Save & Connect Scoreboard</button></form>
+<label style="display:flex;align-items:center;gap:10px;margin-top:12px" for="audio-en"><input style="width:auto" id="audio-en" name="audio_en" type="checkbox" value="1")html";
+  if (audioEnabled) page += " checked";
+  page += R"html(>Enable audio output (score sounds)</label>
+)html";
+  // Sound picker: options, the saved choice, and a preview button that
+  // posts the highlighted option's id — no save needed to hear it.
+  // Hidden when the sport injects no sounds.
+  if (netSoundOptionCount > 0 && netBranding.soundSettingLabel != nullptr &&
+      netBranding.soundSettingLabel[0] != '\0') {
+    page += "<hr><h3>";
+    page += netBranding.soundSettingLabel;
+    page += R"html(</h3>
+<label for="sound-id">Sound played when your team scores</label>
+<div style="display:flex;gap:8px;align-items:stretch">
+<select id="sound-id" name="sound_id" style="flex:1">)html";
+    for (size_t i = 0; i < netSoundOptionCount; ++i) {
+      page += "<option value=\"" + String(netSoundOptions[i].id) + "\"";
+      if (netSoundOptions[i].id == selectedSoundId) {
+        page += " selected";
+      }
+      page += ">" + htmlEscape(netSoundOptions[i].label) + "</option>";
+    }
+    page += R"html(</select>
+<button type="button" style="margin-top:0;width:auto;padding:10px 16px" onclick="fetch('/audio/test?id='+document.getElementById('sound-id').value,{method:'POST'})">Preview</button>
+</div>
+<p class="hint">Preview plays the highlighted sound without saving &mdash; pick each option to compare. Save applies your choice.</p>
+)html";
+  }
+  page += R"html(<button type="submit">Save & Connect Scoreboard</button></form>
 <hr><h3>Manual Mode</h3>
-<p class="hint">Take manual control: inning, top/bottom, scores, and balls/strikes/outs from a dedicated page. The scoreboard splash screen shows on the TFT while active.</p>
+<p class="hint">Take manual control: inning, top/bottom, scores, and balls/strikes/outs from a dedicated page.</p>
 <button type="button" onclick="location.href='/manual'">Open Manual Mode</button>
+<hr><h3>Diagnostics</h3>
+<p class="hint">Feed status and stability, the screen self-test, the game demo, and factory reset.</p>
+<button type="button" style="margin-top:8px" onclick="location.href='/diag'">Open Diagnostics</button>
 <hr><h3>Firmware Update</h3>
-<p class="hint">Installed: )html" + String(FIRMWARE_VERSION) + R"html(. Automatic check runs once at boot; use the button below to check on demand.</p>
-<button type="button" style="margin-top:8px" onclick="otaCheck()">Check for Update Now</button>
+<p class="hint">Installed: )html" + String(FIRMWARE_VERSION) + R"html(. Update checks run automatically at boot — power-cycle the board to check and install.</p>
 <p class="hint" id="otaStatus">&nbsp;</p>
 <p class="hint">Latest binary (for manual updates):<br>
 <a style="color:#f5c400;word-break:break-all" href=")html" + String(OTA_LATEST_BIN_URL) + R"html(">)html" + String(OTA_LATEST_BIN_URL) + R"html(</a></p>
 <p><a style="color:#f5c400" href="/update">Upload a firmware file manually</a></p>
+<hr><h3>Support</h3>
+<p class="hint">Questions, setup help, or a problem with your scoreboard? Get in touch:</p>
+<p><a style="color:#f5c400" href="mailto:)html" + String(SUPPORT_EMAIL) + R"html(">)html" + String(SUPPORT_EMAIL) + R"html(</a></p>
+<p><a style="color:#f5c400" href=")html" + String(SUPPORT_WEBSITE_URL) + R"html(">)html" + String(SUPPORT_WEBSITE_URL) + R"html(</a></p>
 <script>
-var otaWaiting=false;
-function otaCheck(){otaWaiting=true;document.getElementById('otaStatus').textContent='Checking...';fetch('/ota/check',{method:'POST'})}
+var netSel=document.getElementById('network');
+var netTries=0;
+var netPoll=setInterval(function(){
+  fetch('/networks').then(function(r){return r.text()}).then(function(h){
+    if(h.indexOf('<option')>=0){
+      var cur=netSel.value;
+      netSel.innerHTML='<option value="">Enter network manually</option>'+h;
+      for(var i=0;i<netSel.options.length;i++){if(netSel.options[i].value===cur){netSel.value=cur;break}}
+      clearInterval(netPoll);
+    } else if(++netTries>=10){
+      netSel.innerHTML='<option value="">Enter network manually</option><option disabled>No networks found &mdash; enter name below</option>';
+      clearInterval(netPoll);
+    }
+  }).catch(function(){if(++netTries>=10)clearInterval(netPoll)});
+},2000);
 setInterval(function(){fetch('/ota/status').then(function(r){return r.json()}).then(function(s){var e=document.getElementById('otaStatus');
-if(s.stage==='DOWNLOADING'){otaWaiting=false;e.textContent='Downloading update '+s.progress+'% - watch the scoreboard; do not power off.'}
-else if(s.stage==='REBOOTING'){otaWaiting=false;e.textContent='Update installed - rebooting...'}
-else if(s.stage==='FAILED'){otaWaiting=false;e.textContent='Update failed (network may block GitHub) - use the manual upload below.'}
-else if(otaWaiting&&s.checked&&!s.ok){otaWaiting=false;e.textContent='Check failed - this network may block GitHub. Use the manual upload below.'}
-else if(otaWaiting&&s.checked&&s.ok){otaWaiting=false;e.textContent='No update available - firmware is current.'}
+if(s.stage==='DOWNLOADING'){e.textContent='Downloading update '+s.progress+'% - watch the scoreboard; do not power off.'}
+else if(s.stage==='REBOOTING'){e.textContent='Update installed - rebooting...'}
+else if(s.stage==='FAILED'){e.textContent='Update failed - power-cycle the board to retry.'}
 })},2000);
 </script>
 </main></body></html>)html";
@@ -550,7 +713,187 @@ else if(otaWaiting&&s.checked&&s.ok){otaWaiting=false;e.textContent='No update a
 void serveStatus() {
   markPortalActivity();
   const char* name = state == ONLINE ? "online" : (state == CONNECTING ? "connecting" : "provisioning");
-  server.send(200, "application/json", String("{\"state\":\"") + name + "\"}");
+  String j = String("{\"state\":\"") + name + "\",\"uptimeSec\":" +
+             (unsigned)(millis() / 1000) + ",\"resetReason\":\"" +
+             health::resetReasonName() + "\",\"lastCrash\":" +
+             health::lastCrashJson();
+  if (netStatusExtra != nullptr) {
+    j += ",\"feeds\":{" + netStatusExtra() + "}";
+  }
+  j += "}";
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", j);
+}
+
+// Diagnostics page (/diag): feed status, stability, the screen self-test,
+// the game demo, and factory reset — the hardware-checking tools pulled
+// off the main setup page so configuration and diagnosis don't crowd each
+// other.
+void serveDiagnosticsPage() {
+  markPortalActivity();
+  server.sendHeader("Cache-Control", "no-store");
+  String page = R"html(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>@@NAME@@ Diagnostics</title><style>
+body{margin:0;background:#061b46;color:#fff;font:16px system-ui,sans-serif}
+main{max-width:440px;margin:5vh auto;padding:24px;background:#0b2b62;border:2px solid #dfe9ff;border-radius:8px}
+h1{margin-top:0;font-size:24px}h3{margin-bottom:6px}
+button{margin-top:12px;width:100%;padding:12px;background:#f5c400;border:0;border-radius:4px;font-weight:700;font-size:16px;color:#000;cursor:pointer}
+.hint{color:#c5d3ee;font-size:14px;line-height:1.4}
+.readout{font-size:22px;font-weight:700;color:#f5c400;margin:8px 0 4px}
+hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
+</style></head><body><main><h1>@@NAME@@ Diagnostics</h1>
+<p class="hint">Firmware )html" + String(FIRMWARE_VERSION) + R"html(</p>
+<h3>Battery</h3>
+<p class="readout" id="battReadout">Reading battery...</p>
+<p class="hint">Live pack voltage and estimated remaining charge for the 3.7 V LiPo (refreshes every 5 s). Voltage-based estimate: honest to roughly &plusmn;15 points through the flat middle of the discharge curve and conservative while the scoreboard is drawing hard. Full is ~4.2 V, empty ~3.4 V.</p>
+<hr><h3>Feed Diagnostics</h3>
+<p class="readout" id="feedReadout" style="font-size:16px">Reading feeds...</p>
+<p class="hint">Live MLB feed state (refreshes every 5 s): schedule fetch attempts and successes, the last error and HTTP code, the followed game, Wi-Fi signal, and the device clock &mdash; an unsynced clock blocks schedule fetches entirely. code -1 means the fetch failed before any HTTP response (DNS/radio).</p>
+<hr><h3>Stability</h3>
+<p class="readout" id="healthReadout" style="font-size:16px">Reading...</p>
+<p class="hint">How long the board has been running and why it last restarted: power-on and software (updates) are normal; panic, watchdog or brownout mean it rebooted on its own. The last stored crash (kept until the next one) is shown with its code addresses &mdash; send that line to support. "this firmware" means it happened on the version running now.</p>
+<hr><h3>Screen Self-Test</h3>
+<p class="hint">Cycles every display once (matrices, count LEDs, screen), holds everything on for 2 seconds, then returns to what was showing.</p>
+<button type="button" onclick="dtest()">Run Display Test</button>
+<p class="hint" id="dtestStatus">&nbsp;</p>
+<hr><h3>Full Board Test</h3>
+<p class="hint">Post-build check &mdash; runs with no Wi-Fi. Cycles every display, plays the selected score sound, and (once the gauge divider is wired) verifies the battery sense circuit. Watch the board and listen while it runs (~10 s).</p>
+<button type="button" onclick="btest()">Run Full Board Test</button>
+<p class="hint" id="btestStatus">Not run yet.</p>
+<hr><h3>Audio Test</h3>
+<p class="hint">Plays the selected score sound over the speaker.</p>
+<button type="button" onclick="atest()">Play Test Sound</button>
+<hr><h3>Game Demo</h3>
+<p class="hint">Show a simulated live game on the scoreboard — Blue Jays vs Dodgers with inning, count, runners, scoring plays, and the at-bat result cards.</p>
+<button id="demoStart" type="button" style="margin-top:8px" onclick="setDemo(true)">Start Game Demo</button>
+<button id="demoStop" type="button" style="margin-top:8px;background:#2a5daf;color:#fff;display:none" onclick="setDemo(false)">Stop Game Demo</button>
+<p class="hint" id="demoStatus">Demo is stopped.</p>
+<hr><h3>Factory Reset</h3>
+<p class="hint">Wipes every saved setting back to factory defaults: Wi-Fi credentials, favorite teams, time zone, the score sound, and the idle-clock/audio options. The board reboots onto its setup access point, ready to configure from scratch.</p>
+<button type="button" style="background:#b3261e;color:#fff" onclick="frst()">Factory Reset</button>
+<p class="hint" id="frStatus">&nbsp;</p>
+<hr><button type="button" onclick="location.href='/'">Back to Setup</button>
+<script>
+function pollBatt(){fetch('/battery/status').then(function(r){return r.json()}).then(function(s){var e=document.getElementById('battReadout');
+if(!s.present){e.textContent='Battery sensing is not wired on this board.';return}
+if(s.volts<=0.5){e.textContent='No reading yet.';return}
+var pct=s.percent>100?'reading...':(s.percent+'% remaining');
+var q=s.quarters>4?'--':(s.quarters+'/4 on screen');
+e.textContent=s.volts.toFixed(2)+' V \u2014 '+pct+' ('+q+')';
+}).catch(function(){document.getElementById('battReadout').textContent='Unable to read battery.'})}
+pollBatt();setInterval(pollBatt,5000);
+function pollFeed(){fetch('/status').then(function(r){return r.json()}).then(function(s){var e=document.getElementById('feedReadout');var f=s.feeds||{};
+e.textContent='attempts '+(f.schedAttempts!=null?f.schedAttempts:'-')+' · ok '+(f.schedOk!=null?f.schedOk:'-')+' · code '+(f.schedCode!=null?f.schedCode:'-')+' · '+(f.schedErr||'')+' · game '+(f.activeGamePk||0)+' · rssi '+(f.rssi||0)+' dBm · clock '+(f.clock||'?');
+var u=s.uptimeSec||0,c=s.lastCrash;document.getElementById('healthReadout').textContent='up '+Math.floor(u/3600)+'h '+Math.floor(u%3600/60)+'m · last restart: '+(s.resetReason||'?')+' · last crash: '+(c?(c.task+' @ '+c.pc+(c.thisFirmware?' (this firmware)':' (older firmware)')):'none stored')}).catch(function(){document.getElementById('feedReadout').textContent='Unable to read feed status.'})}
+pollFeed();setInterval(pollFeed,5000);
+function dtest(){document.getElementById('dtestStatus').textContent='Running - watch the scoreboard...';fetch('/display/test',{method:'POST'}).then(function(){setTimeout(function(){document.getElementById('dtestStatus').textContent='Done.'},12000)}).catch(function(){document.getElementById('dtestStatus').textContent='Request failed.'})}
+function btest(){var e=document.getElementById('btestStatus');e.textContent='Running \u2014 watch the displays and listen for the score sound...';fetch('/board/test',{method:'POST'}).then(function(r){return r.json()}).then(function(s){var b=s.battery||{};var t;if(!b.equipped){t='Battery sense: not wired.'}else if(b.ok){t='Battery sense: '+b.volts.toFixed(2)+' V \u2014 OK.'}else{t='Battery sense: CHECK FAILED ('+(b.volts!=null?b.volts.toFixed(2)+' V':'no reading')+') \u2014 pack missing or sense wiring fault.'}e.textContent=t+' Displays and sound: verify by eye and ear.'}).catch(function(){document.getElementById('btestStatus').textContent='Request failed.'})}
+function atest(){fetch('/audio/test',{method:'POST'})}
+function frst(){if(!confirm('Factory reset wipes ALL settings, including Wi-Fi, and reboots the board into setup mode. Continue?'))return;document.getElementById('frStatus').textContent='Resetting — the board is rebooting. Its setup Wi-Fi hotspot comes back up in a few moments.';fetch('/factory/reset',{method:'POST'}).catch(function(){})}
+function setDemo(running){fetch(running?'/demo/start':'/demo/stop',{method:'POST'}).then(function(r){if(!r.ok)throw new Error('request failed');paintDemo(running)}).catch(function(){document.getElementById('demoStatus').textContent='Demo request failed.'})}
+function paintDemo(running){document.getElementById('demoStart').style.display=running?'none':'block';document.getElementById('demoStop').style.display=running?'block':'none';document.getElementById('demoStatus').textContent=running?'Game demo is running on the scoreboard.':'Demo is stopped.'}
+fetch('/demo/status').then(function(r){return r.json()}).then(function(s){paintDemo(s.running)}).catch(function(){document.getElementById('demoStatus').textContent='Unable to read demo status.'});
+</script>
+</main></body></html>)html";
+  page.replace("@@NAME@@", netBranding.deviceName);
+  server.send(200, "text/html", page);
+}
+
+void handleDisplayTest() {
+  // Fire-and-forget trigger: no markPortalActivity() on purpose — the
+  // display test runs on the render core while feeds keep flowing.
+  displayTestRequested = true;
+  server.send(200, "text/plain", "ok");
+}
+
+void handleAudioTest() {
+  markPortalActivity();
+  // The sound picker's Preview button names a specific option; the
+  // diagnostics "Play Test Sound" plays the saved selection.
+  audioTestSoundId = server.hasArg("id") ? server.arg("id").toInt() : -1;
+  audioTestRequested = true;
+  server.send(200, "text/plain", "ok");
+}
+
+// Live pack voltage for the diagnostics page (gauge-capable boards).
+// percent and quarters arrive as 255 when no trustworthy sample exists.
+void serveBatteryStatus() {
+  markPortalActivity();
+  if (!power::batteryGaugeAvailable()) {
+    server.send(200, "application/json", "{\"present\":false}");
+    return;
+  }
+  char buf[72];
+  snprintf(buf, sizeof(buf),
+           "{\"present\":true,\"volts\":%.2f,\"percent\":%d,\"quarters\":%d}",
+           power::batteryVolts(), (int)power::batteryPercent(),
+           (int)power::batteryQuarters());
+  server.send(200, "application/json", buf);
+}
+
+// Full board test (diagnostics page — the post-build bench check; runs
+// with no Wi-Fi at all): fires the display self-test and the saved score
+// sound via the existing request flags (the sport's tick runs both, and
+// the display flag engages the offline portal override), and takes a
+// FRESH battery reading right here on the network task. The response
+// reports the battery verdict; displays and sound are verified by the
+// operator watching and listening.
+void handleBoardTest() {
+  markPortalActivity();
+  bool equipped = power::batteryGaugeAvailable();
+  float volts = equipped ? power::readBatteryNow() : 0.0f;
+  // Verdict: a healthy 1S LiPo pack sits between ~2.9 V (cut-off floor)
+  // and the 4.3 V plausibility ceiling. Below ~0.5 V the divider reads
+  // nothing — pack not installed, or the sense wiring is open; above
+  // 4.3 V the divider taps the 5 V boost rail instead of B+.
+  bool batteryOk = equipped && volts >= 2.9f && volts <= 4.30f;
+  displayTestRequested = true;
+  audioTestSoundId = -1;  // no id: the sport plays the SAVED sound
+  audioTestRequested = true;
+  String j = "{\"battery\":{\"equipped\":";
+  j += equipped ? "true" : "false";
+  j += ",\"volts\":";
+  j += String(volts, 2);
+  j += ",\"ok\":";
+  j += batteryOk ? "true" : "false";
+  j += "}}";
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", j);
+}
+
+// Factory reset (diagnostics page): wipe every persisted setting — the
+// NVS "network" namespace (Wi-Fi credentials, preferred teams, timezone,
+// idle-clock switch) and the LittleFS config.json — then reboot. With a
+// blank SSID the board comes back on its setup access point like a fresh
+// unit.
+void handleFactoryReset() {
+  markPortalActivity();
+  preferences.begin("network", false);
+  preferences.clear();
+  preferences.end();
+  LittleFS.remove("/config.json");
+  server.send(200, "text/plain", "ok");
+  Serial.println("[NET] factory reset: settings wiped, rebooting");
+  delay(500);  // let the response reach the browser before the restart
+  ESP.restart();
+}
+
+void handleDemoStart() {
+  markPortalActivity();
+  manualMode = false;  // exactly one portal mode owns the display at a time
+  gameDemoMode = true;
+  server.send(200, "text/plain", "ok");
+}
+
+void handleDemoStop() {
+  markPortalActivity();
+  gameDemoMode = false;
+  server.send(200, "text/plain", "ok");
+}
+
+void handleDemoStatus() {
+  server.send(200, "application/json",
+              String("{\"running\":") + (gameDemoMode ? "true}" : "false}"));
 }
 
 void saveNetwork() {
@@ -558,6 +901,18 @@ void saveNetwork() {
   pendingSsid = server.arg("ssid");
   pendingPassword = server.arg("password");
   clockDisplayEnabled = server.hasArg("show_clock");
+  audioEnabled = server.hasArg("audio_en");
+  // Sound selection is validated against the injected option list — never
+  // trust a raw form value.
+  if (server.hasArg("sound_id")) {
+    int requestedSoundId = server.arg("sound_id").toInt();
+    for (size_t i = 0; i < netSoundOptionCount; ++i) {
+      if (netSoundOptions[i].id == requestedSoundId) {
+        selectedSoundId = requestedSoundId;
+        break;
+      }
+    }
+  }
   if (server.hasArg("team1")) prefTeam1 = server.arg("team1").toInt();
   if (server.hasArg("team2")) prefTeam2 = server.arg("team2").toInt();
   if (server.hasArg("team3")) prefTeam3 = server.arg("team3").toInt();
@@ -573,10 +928,14 @@ void saveNetwork() {
   }
 
   // Network settings only count as changed when a new SSID is supplied or a
-  // password is (re-)entered; otherwise this is a display-settings-only save
-  // and the Wi-Fi connection must be left alone.
+  // password is (re-)entered; otherwise this is a team/display-settings-only
+  // save and the Wi-Fi connection must be left alone.
   bool networkChanging = !pendingSsid.isEmpty() &&
                          (pendingSsid != savedSsid || !pendingPassword.isEmpty());
+  // A blank network name means "disconnect": the saved credentials are
+  // cleared and the board returns to its setup access point for
+  // reconfiguration.
+  bool forgetting = pendingSsid.isEmpty() && !savedSsid.isEmpty();
 
   if (savedSsid.isEmpty() && !networkChanging) {
     server.send(400, "text/plain", "Wi-Fi network name is required");
@@ -586,6 +945,8 @@ void saveNetwork() {
   // Display/team preferences always persist; credentials only when they changed.
   preferences.begin("network", false);
   preferences.putBool("show_clock", clockDisplayEnabled);
+  preferences.putBool("audio_en", audioEnabled);
+  preferences.putInt("sound_id", selectedSoundId);
   preferences.putString("tz", tzString);
   preferences.putInt("team1", prefTeam1);
   preferences.putInt("team2", prefTeam2);
@@ -593,6 +954,9 @@ void saveNetwork() {
   if (networkChanging) {
     preferences.putString("ssid", pendingSsid);
     preferences.putString("password", pendingPassword);
+  } else if (forgetting) {
+    preferences.remove("ssid");
+    preferences.remove("password");
   }
   preferences.end();
 
@@ -600,17 +964,42 @@ void saveNetwork() {
     applyTimezone();  // game times + idle clock follow on the next render
   }
 
+  if (forgetting) {
+    // Respond BEFORE tearing the link down so the phone actually sees
+    // the confirmation; the on-screen AP instructions carry the exact
+    // network name and portal address to rejoin on.
+    server.send(200, "text/html", R"html(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Disconnected</title><style>body{margin:0;background:#061b46;color:#fff;font:16px system-ui,sans-serif}
+main{max-width:420px;margin:8vh auto;padding:28px;background:#0b2b62;border:2px solid #dfe9ff;border-radius:8px;text-align:center}
+</style></head><body><main><h1>Wi-Fi Disconnected</h1>
+<p>The saved network was cleared and the scoreboard left your Wi-Fi.</p>
+<p>Its setup access point is back: check the scoreboard screen for the network name and portal address, join it, and configure a new network.</p>
+</main></body></html>)html");
+    delay(800);  // let the response flush before the station link drops
+    savedSsid = "";
+    savedPassword = "";
+    WiFi.disconnect();
+    enterProvisioning();
+    return;
+  }
+
   if (!networkChanging) {
     Serial.printf("[NET] Preferences-only save: teams=[%d, %d, %d] tz=%s show_clock=%d (network untouched)\n",
                   prefTeam1, prefTeam2, prefTeam3, tzString.c_str(),
                   clockDisplayEnabled ? 1 : 0);
-    server.send(200, "text/html", R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+    String response = R"html(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Saved</title><style>body{margin:0;background:#061b46;color:#fff;font:16px system-ui,sans-serif}
 main{max-width:420px;margin:8vh auto;padding:28px;background:#0b2b62;border:2px solid #dfe9ff;border-radius:8px;text-align:center}
 </style></head><body><main><h1>Settings Saved</h1>
 <p>Team priorities and display settings updated — the scoreboard picks them up within a minute.</p>
 <p>Wi-Fi settings were not changed.</p>
-<p><a style="color:#f5c400" href="/">Back to configuration</a></p></main></body></html>)html");
+<p><a style="color:#f5c400" href=")html";
+    response += "/";
+    response += R"html(">Back</a></p></main></body></html>)html";
+    server.send(200, "text/html", response);
+    // A save ends the configuration session: the feeds must act on the new
+    // picks at their next poll, not after the activity window lapses.
+    portalActiveUntil = 0;
     return;
   }
 
@@ -620,9 +1009,9 @@ main{max-width:420px;margin:8vh auto;padding:28px;background:#0b2b62;border:2px 
 
   WiFi.disconnect();
   WiFi.begin(pendingSsid.c_str(), pendingPassword.c_str());
-  enterConnecting();
+  enterConnecting(pendingSsid, ConnectReason::NEW_NETWORK);
 
-  server.send(200, "text/html", R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+  server.send(200, "text/html", R"html(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Connecting</title><style>body{margin:0;background:#061b46;color:#fff;font:16px system-ui,sans-serif}
 main{max-width:420px;margin:8vh auto;padding:28px;background:#0b2b62;border:2px solid #dfe9ff;border-radius:8px;text-align:center}
 #status{font-size:20px;font-weight:700}</style></head><body><main><h1>Connecting...</h1>
@@ -632,7 +1021,8 @@ main{max-width:420px;margin:8vh auto;padding:28px;background:#0b2b62;border:2px 
 if(s.state==='online'){document.getElementById('status').textContent='Connected! The scoreboard is going online.'}
 else if(s.state==='provisioning'){document.getElementById('status').textContent='Could not connect or no internet. Check the password and try again.'}
 })},2000)</script></main></body></html>)html");
-  Serial.printf("Saved network '%s'\n", pendingSsid.c_str());
+  Serial.printf("Saved network '%s' and Teams [%d, %d, %d]\n",
+                pendingSsid.c_str(), prefTeam1, prefTeam2, prefTeam3);
 }
 
 
@@ -664,18 +1054,10 @@ void serveConfig() {
   server.send(200, "application/json", readConfig());
 }
 
-void handleOtaCheckNow() {
-  markPortalActivity();
-  if (!isOnline()) {
-    server.send(503, "text/plain", "Not online");
-    return;
-  }
-  requestOtaCheckNow();
-  server.send(200, "application/json", "{\"ok\":true}");
-}
-
+// Polled every 2 s by the setup page for as long as it stays open.
+// Deliberately no markPortalActivity() (same policy as the manual page): an
+// idle setup tab would otherwise hold every feed fetch indefinitely.
 void serveOtaStatus() {
-  markPortalActivity();
   const char* stage = "NONE";
   switch (getOtaStage()) {
     case OtaStage::CHECKING:   stage = "CHECKING";   break;
@@ -695,7 +1077,7 @@ void serveOtaStatus() {
 
 void serveUpdatePage() {
   markPortalActivity();
-  server.send(200, "text/html", R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+  server.send(200, "text/html", R"html(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Firmware Update</title><style>
 body{margin:0;background:#061b46;color:#fff;font:16px system-ui,sans-serif}
 main{max-width:440px;margin:8vh auto;padding:24px;background:#0b2b62;border:2px solid #dfe9ff;border-radius:8px}
@@ -743,9 +1125,10 @@ void handleUpdateResult() {
 
 void serveManualPage() {
   markPortalActivity();
-  manualMode = true;  // arriving at the page engages manual mode
+  gameDemoMode = false;  // arriving at the page takes the display back from demo
+  manualMode = true;     // and engages manual mode
   server.sendHeader("Cache-Control", "no-store");
-  String page = R"html(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1">
+  String page = R"html(<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>@@NAME@@ Manual</title><style>
 body{margin:0;background:#061b46;color:#fff;font:14px system-ui,sans-serif}
 main{max-width:430px;margin:0 auto;padding:8px}
@@ -776,6 +1159,7 @@ hr{border:0;border-top:1px solid #1c4587;margin:8px 0}
 <div class="row"><span class="muted">inning</span>
 <button class="dec" onclick="adj('inn',-1)">&minus;</button><span class="val" id="inn">1</span><button class="inc" onclick="adj('inn',1)">+</button></div>
 <div class="row"><button id="tbBtn" class="big tb" onclick="toggleTB()">TOP</button></div>
+<button type="button" style="margin-top:10px;background:#f5c400;color:#000;padding:12px;font-size:17px" onclick="fetch('/audio/test',{method:'POST'})">&#128266; Play Score Sound</button>
 <hr>
 <div class="cols">
 <div class="col"><p class="lbl">BALLS</p>
@@ -807,7 +1191,9 @@ paint();
 }
 
 void handleManualSet() {
-  markPortalActivity();
+  // Deliberately no markPortalActivity(): every button tap posts here, and
+  // manual mode is local control — an open manual page must not pause the
+  // feeds the way a configuration page does.
   if (server.hasArg("hs")) manualHomeScore = clampManualScore(server.arg("hs").toInt());
   if (server.hasArg("as")) manualAwayScore = clampManualScore(server.arg("as").toInt());
   if (server.hasArg("inn")) {
@@ -832,13 +1218,22 @@ void handleManualExit() {
 
 void registerPortalRoutes() {
   server.on("/", HTTP_GET, servePortal);
+  server.on("/networks", HTTP_GET, serveNetworks);
   server.on("/status", HTTP_GET, serveStatus);
   server.on("/config", HTTP_GET, serveConfig);
   server.on("/save", HTTP_POST, saveNetwork);
   server.on("/config", HTTP_POST, saveConfig);
   server.on("/update", HTTP_GET, serveUpdatePage);
-  server.on("/ota/check", HTTP_POST, handleOtaCheckNow);
+  server.on("/display/test", HTTP_POST, handleDisplayTest);
+  server.on("/audio/test", HTTP_POST, handleAudioTest);
+  server.on("/battery/status", HTTP_GET, serveBatteryStatus);
+  server.on("/board/test", HTTP_POST, handleBoardTest);
+  server.on("/factory/reset", HTTP_POST, handleFactoryReset);
+  server.on("/demo/start", HTTP_POST, handleDemoStart);
+  server.on("/demo/stop", HTTP_POST, handleDemoStop);
+  server.on("/demo/status", HTTP_GET, handleDemoStatus);
   server.on("/ota/status", HTTP_GET, serveOtaStatus);
+  server.on("/diag", HTTP_GET, serveDiagnosticsPage);
   server.on("/update", HTTP_POST, handleUpdateResult, handleUpdateUpload);
   server.on("/manual", HTTP_GET, serveManualPage);
   server.on("/manual/set", HTTP_POST, handleManualSet);
@@ -853,6 +1248,9 @@ void runNetworkStateMachine() {
       lastReconnectAt = millis();
       Serial.println("[NET] Retrying saved Wi-Fi connection");
       WiFi.reconnect();
+      portENTER_CRITICAL(&connectLock);
+      ++connectRetries;
+      portEXIT_CRITICAL(&connectLock);
     }
     bool holdForFirstBoot = firstBootConnectHeld &&
                             millis() - networkTaskStartedAt < NETWORK_FIRST_CONNECT_MIN_MS;
@@ -871,17 +1269,25 @@ void runNetworkStateMachine() {
       } else if (millis() - disconnectStartedAt >= NETWORK_RECONNECT_GRACE_MS) {
         Serial.println("[NET] Connection lost; retrying saved network");
         setupScreenVisible = true;
-        tryReconnectWithSavedNetwork();
+        tryReconnectWithSavedNetwork(ConnectReason::LINK_LOST);
       }
     }
-    if (setupScreenVisible && millis() - onlineAt >= NETWORK_SETUP_SCREEN_MS) {
+    // A board with no favorite team has nothing to follow: the setup screen
+    // keeps the display until the portal saves a team, and takes it back if
+    // a later save clears every team.
+    if (teamSetupPending() && !setupScreenVisible) {
+      setupScreenVisible = true;
+      requestSetupRedraw(SETUP_ONLINE_PORTAL, WiFi.localIP());
+    }
+    if (setupScreenVisible && !teamSetupPending() &&
+        millis() - onlineAt >= NETWORK_SETUP_SCREEN_MS) {
       setupScreenVisible = false;
       releasePending = true;
     }
   } else if (state == PROVISIONING) {
     if (!savedSsid.isEmpty() && millis() - stateStartedAt >= NETWORK_PROVISIONING_RETRY_MS) {
       Serial.println("[NET] Retrying saved Wi-Fi after provisioning timeout");
-      tryReconnectWithSavedNetwork();
+      tryReconnectWithSavedNetwork(ConnectReason::SETUP_RETRY);
     }
   }
 }
@@ -895,9 +1301,80 @@ bool isProvisioning() {
   return state == PROVISIONING;
 }
 
+bool isConnecting() {
+  return state == CONNECTING;
+}
+
+bool networkLinkUp() {
+  return state == ONLINE && WiFi.status() == WL_CONNECTED;
+}
+
+bool getConnectProgress(ConnectProgress& out) {
+  if (state != CONNECTING) return false;
+  portENTER_CRITICAL(&connectLock);
+  out.attemptId = connectAttemptId;
+  out.reason = connectReason;
+  memcpy(out.ssid, connectSsid, sizeof(out.ssid));
+  out.retries = connectRetries;
+  uint32_t startedAt = connectStartedAt;
+  portEXIT_CRITICAL(&connectLock);
+  out.ssid[sizeof(out.ssid) - 1] = '\0';
+  out.wifiStatus = WiFi.status();
+  out.elapsedMs = millis() - startedAt;
+  out.budgetMs = NETWORK_CONNECT_AND_PROBE_TIMEOUT_MS;
+  return true;
+}
+
+bool teamSetupPending() {
+  return netTeamOptionCount > 0 &&
+         prefTeam1 == 0 && prefTeam2 == 0 && prefTeam3 == 0;
+}
+
 bool portalEngaged() {
   return millis() < portalActiveUntil;
 }
+
+bool consumeDisplayTestRequest() {
+  if (!displayTestRequested) return false;
+  displayTestRequested = false;
+  return true;
+}
+
+bool consumeAudioTestRequest(int& outId) {
+  if (!audioTestRequested) return false;
+  audioTestRequested = false;
+  outId = audioTestSoundId;
+  return true;
+}
+
+int getSelectedSoundId() {
+  return selectedSoundId;
+}
+
+// Audio output toggle (NVS "audio_en", default on). Consumed by the sport
+// layer's sound playback (score sounds and cues).
+bool isAudioEnabled() {
+  return audioEnabled;
+}
+
+bool isManualMode() { return manualMode; }
+void setManualMode(bool on) { manualMode = on; }
+bool isGameDemoMode() { return gameDemoMode; }
+
+bool portalDisplayOverrideActive() {
+  return gameDemoMode || manualMode || displayTestRequested ||
+         audioTestRequested;
+}
+
+void requestNetworkScreenRepaint() { redrawSetupPending = true; }
+
+int  getManualHomeScore()   { return manualHomeScore; }
+int  getManualAwayScore()   { return manualAwayScore; }
+int  getManualInning()      { return manualInning; }
+bool getManualTopOfInning() { return manualTopOfInning; }
+int  getManualBalls()       { return manualBalls; }
+int  getManualStrikes()     { return manualStrikes; }
+int  getManualOuts()        { return manualOuts; }
 
 const char* getSavedWifiSsid() {
   return savedSsid.c_str();
@@ -926,20 +1403,15 @@ const char* getTzString() {
   return tzString.c_str();
 }
 
-bool isManualMode() { return manualMode; }
-void setManualMode(bool on) { manualMode = on; }
-int  getManualHomeScore()   { return manualHomeScore; }
-int  getManualAwayScore()   { return manualAwayScore; }
-int  getManualInning()      { return manualInning; }
-bool getManualTopOfInning() { return manualTopOfInning; }
-int  getManualBalls()       { return manualBalls; }
-int  getManualStrikes()     { return manualStrikes; }
-int  getManualOuts()        { return manualOuts; }
-
 void startNetworkServices(const NetworkBranding& branding,
                           const NetworkTeamOption* teamOptions,
                           size_t teamOptionCount,
-                          const int defaultPreferredTeams[3]) {
+                          const int defaultPreferredTeams[3],
+                          const NetworkSoundOption* soundOptions,
+                          size_t soundOptionCount,
+                          int defaultSoundId,
+                          String (*statusExtraJson)()) {
+  netStatusExtra = statusExtraJson;
   netBranding = branding;
   netTeamOptions = teamOptions;
   netTeamOptionCount = teamOptionCount;
@@ -948,6 +1420,10 @@ void startNetworkServices(const NetworkBranding& branding,
     netDefaultTeams[1] = defaultPreferredTeams[1];
     netDefaultTeams[2] = defaultPreferredTeams[2];
   }
+  netSoundOptions = soundOptions;
+  netSoundOptionCount = soundOptionCount;
+  netDefaultSoundId = defaultSoundId;
+  selectedSoundId = defaultSoundId;
   deviceHostname = branding.hostname;
   apSsid = branding.apSsid;
   networkTaskStartedAt = millis();
@@ -955,21 +1431,27 @@ void startNetworkServices(const NetworkBranding& branding,
     Serial.println("LittleFS unavailable; runtime settings disabled");
   }
   registerPortalRoutes();
-  WiFi.mode(WIFI_AP_STA);
-  // Keep the modem awake from the very first connection (previously only
-  // reconnects did this): default power save makes the radio sleep between
-  // beacons, which stalls inbound portal page loads from phones.
-  WiFi.setSleep(false);
+  // Unique per-board hostname built on the sport's branding base
+  // ("baseball-scoreboard-a68d0") so mDNS/OTA targets and router client
+  // lists name the right device; the suffix (last 5 hex digits of the
+  // station MAC) disambiguates multiple boards. Must be set BEFORE
+  // WiFi.mode(): the core copies the name onto the station interface only
+  // inside a mode change, so a later setHostname() never reaches DHCP and
+  // routers list the board under the core's default name ("esp32s3-XXXXXX").
   String macAddress = WiFi.macAddress();
   macAddress.replace(":", "");
   if (macAddress.length() >= 5) {
-    // Per-device hostname off the branding base (e.g. "baseball-scoreboard-ab12c")
     deviceHostname = String(branding.hostname) + "-" +
                      macAddress.substring(macAddress.length() - 5);
     deviceHostname.toLowerCase();
   }
   WiFi.setHostname(deviceHostname.c_str());
   Serial.printf("[NET] Device hostname: %s\n", deviceHostname.c_str());
+  WiFi.mode(WIFI_AP_STA);
+  // Keep the modem awake from the very first connection (previously only
+  // reconnects did this): default power save makes the radio sleep between
+  // beacons, which stalls inbound portal page loads from phones.
+  WiFi.setSleep(false);
   // The web server starts now and serves over whichever interface is up,
   // but the setup AP only comes up in enterProvisioning() — i.e. when
   // there's genuinely no saved network or connecting failed. Starting it
@@ -984,7 +1466,7 @@ void startNetworkServices(const NetworkBranding& branding,
     enterProvisioning();
   } else {
     WiFi.begin(savedSsid.c_str(), savedPassword.c_str());
-    enterConnecting();
+    enterConnecting(savedSsid, ConnectReason::STARTUP);
   }
 }
 
@@ -1006,12 +1488,15 @@ void handleNetworkDisplay() {
     IPAddress ip(setupIpV);
     switch (redrawModeV) {
       case SETUP_CONNECTING:
+        // Nothing to draw here: the shell's connecting screen
+        // (common/ui/connect_screen) owns the display while connecting.
+        break;
       case SETUP_ONLINE_PORTAL:
-        // Connecting and online transitions draw nothing: the boot logo
-        // stays on screen while Wi-Fi connects behind it (loop() also
-        // holds the logo for BOOT_SPLASH_HOLD_MS). Only the AP
-        // provisioning instructions ever replace the logo — they're the
-        // one screen the device can't work without.
+        // Online normally gives the display straight to the scoreboard;
+        // only a board with no favorite team stays on a setup screen.
+        if (teamSetupPending()) {
+          renderAccessPointInstructions(ip.toString(), true);
+        }
         break;
       case SETUP_AP_INSTRUCTIONS:
         renderAccessPointInstructions(ip.toString(), false);

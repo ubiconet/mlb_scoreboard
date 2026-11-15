@@ -16,6 +16,15 @@ namespace {
 // can't absorb a multi-KB read buffer alongside the HTTP/TLS frames.
 uint8_t sOtaBuf[4096];
 
+// Manifest staging buffer. Static (not stack) and sized for the FULL
+// manifest: readExactBody() refuses any body larger than the buffer, so an
+// undersized buffer silently fails EVERY check the moment the manifest
+// grows a field (the NHL port lost every check this way when its manifest
+// gained flasher-tool fields — the live manifest ran ~775-950 B against a
+// 512-byte buffer). 2 KB leaves field headroom without touching the tight
+// task stack.
+uint8_t sManifestBuf[2048];
+
 bool sCheckedOnce = false;
 bool sLastCheckOk = false;
 uint32_t sLastCheckAt = 0;
@@ -203,9 +212,8 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   http.setTimeout(10000);
   int httpCode = http.GET();
   DBG_PRINTF("[OTA] manifest -> HTTP %d\n", httpCode);
-  uint8_t manifestBuf[512];
   if (httpCode != HTTP_CODE_OK ||
-      readExactBody(http, manifestBuf, sizeof(manifestBuf)) == 0) {
+      readExactBody(http, sManifestBuf, sizeof(sManifestBuf)) == 0) {
     sLastCheckOk = false;
     sBootAttempts++;
     // After the boot attempts are exhausted, let the feeds start.
@@ -218,10 +226,10 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
   sCheckedOnce = true;
   // Null-terminate and parse; values are copied out before the buffer is
   // reused (in-memory parses link strings into the buffer).
-  manifestBuf[sizeof(manifestBuf) - 1] = '\0';
+  sManifestBuf[sizeof(sManifestBuf) - 1] = '\0';
   JsonDocument doc;
   DeserializationError error =
-      deserializeJson(doc, (const char*)manifestBuf);
+      deserializeJson(doc, (const char*)sManifestBuf);
   if (error) {
     DBG_PRINTF("[OTA] manifest parse error: %s\n", error.c_str());
     sLastCheckOk = false;

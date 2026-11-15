@@ -24,18 +24,25 @@ static const uint32_t SERIAL_BAUD_RATE = 115200;
 #define DBG_PRINTF(fmt, ...) do {} while (0)
 #endif
 
+// SB_DEBUG builds: heap + per-task stack heartbeat on Serial (see
+// common/app/health.h) — the soak-test trend line for leaks/overflows.
+static const uint32_t HEALTH_HEARTBEAT_MS = 60000;
+
 // Boot sequence: the scoreboard logo splash holds the screen for at least
-// BOOT_SPLASH_HOLD_MS while Wi-Fi connects behind it. A handshake still in
-// flight at the end of that window EXTENDS the splash up to
-// BOOT_SPLASH_CONNECT_MAX_MS (sized to the network service's own connect
-// budget), so the screen that follows shows the outcome: once the
-// connection is made, the status/setup page shows for BOOT_SETUP_PAGE_MS;
-// if it cannot be made, the AP provisioning page ("connect to the
-// scoreboard") shows instead and holds until the portal establishes the
-// connection. The sport UI takes over after that.
+// BOOT_SPLASH_HOLD_MS while Wi-Fi connects behind it. A connection still
+// in flight after that shows the connecting screen (common/ui/
+// connect_screen) until it succeeds or the network service falls back to
+// setup mode (NETWORK_CONNECT_AND_PROBE_TIMEOUT_MS). Once the connection
+// is made, the status/setup page shows for BOOT_SETUP_PAGE_MS; if it
+// cannot be made, the AP provisioning page ("connect to the scoreboard")
+// shows instead and holds until the portal establishes the connection.
+// The sport UI takes over after that.
 static const uint32_t BOOT_SPLASH_HOLD_MS = 5000;
-static const uint32_t BOOT_SPLASH_CONNECT_MAX_MS = 30000;
 static const uint32_t BOOT_SETUP_PAGE_MS = 6000;
+
+// Network-down indicator: while the board has no network connection, the
+// sport's NETWORK_DOWN_BLINK_COUNT_* lamps flash, on and off this long each.
+static const uint32_t NETWORK_DOWN_BLINK_MS = 500;
 
 // Network portal login + dev-flashing password (device-level, not sport).
 static const char* NETWORK_AP_PASSWORD = "score1234";
@@ -49,7 +56,7 @@ static const uint32_t NETWORK_PROBE_INTERVAL_MS = 5000;
 static const uint32_t NETWORK_RECONNECT_GRACE_MS = 15000; // sustained drop before re-provisioning
 static const uint32_t NETWORK_RECONNECT_RETRY_MS = 5000;
 static const uint32_t NETWORK_DEBUG_INTERVAL_MS = 10000;
-static const uint32_t NETWORK_SETUP_SCREEN_MS = 0;         // online screen no longer drawn; release scoreboard immediately
+static const uint32_t NETWORK_SETUP_SCREEN_MS = 0;         // release the scoreboard as soon as online (unless no team is picked — see teamSetupPending)
 static const uint32_t NETWORK_SCAN_REFRESH_MS = 30000;    // portal scan-list cache age
 static const uint32_t NETWORK_PROVISIONING_RETRY_MS = 60000; // retry saved Wi-Fi after this long in AP mode
 // While anyone is using the setup portal (any HTTP request refreshes this

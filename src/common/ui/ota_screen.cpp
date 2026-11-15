@@ -1,7 +1,8 @@
 #include <Arduino.h>
 
 #include <Adafruit_GFX.h>
-#include <Adafruit_ST7789.h>
+#include <Adafruit_ILI9341.h>
+#include <Adafruit_ST77xx.h>  // ST77XX_* color constants
 
 #include "config.h"
 #include "common/hal/tft_panel.h"
@@ -20,7 +21,7 @@ volatile bool gDisplayParked = false;
 // direct-draw screen after the AP provisioning page. During an install the
 // display is parked (canvas freed so the TLS download fits the heap), so the
 // canvas cannot be trusted to exist here; the panel can.
-void drawOtaProgressBar(Adafruit_ST7789& tft) {
+void drawOtaProgressBar(Adafruit_ILI9341& tft) {
   tft.drawRoundRect(20, 140, 280, 22, 4, COLOR_MUTED);
   int fillW = (gOtaProgress > 100 ? 100 : gOtaProgress) * 276 / 100;
   if (fillW > 0) tft.fillRoundRect(22, 142, fillW, 18, 3, COLOR_LED_RED);
@@ -32,7 +33,7 @@ void drawOtaProgressBar(Adafruit_ST7789& tft) {
 }
 
 void renderOtaUpdateScreen() {
-  Adafruit_ST7789& tft = tftPanel.raw();
+  Adafruit_ILI9341& tft = tftPanel.raw();
   tft.fillScreen(COLOR_BG);
 
   tft.setTextColor(COLOR_GOLD);
@@ -110,7 +111,7 @@ bool handleOtaUpdateScreen() {
   }
   if (gOtaStage == OtaStage::DOWNLOADING && gOtaProgress != sLastDrawnPct) {
     sLastDrawnPct = gOtaProgress;
-    Adafruit_ST7789& tft = tftPanel.raw();
+    Adafruit_ILI9341& tft = tftPanel.raw();
     tft.fillRect(20, 136, 280, 68, COLOR_BG);
     drawOtaProgressBar(tft);
   }

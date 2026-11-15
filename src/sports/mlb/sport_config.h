@@ -19,28 +19,61 @@
 // The 5-arg software-SPI constructor is deliberate: on ESP32-S3 the 3-arg
 // hardware-SPI variant binds SPI.begin() to the variant's default VSPI pins
 // instead of these, leaving a blank screen. See main.cpp's display comment.
-static const int TFT_SCLK_PIN = 13;
-static const int TFT_MOSI_PIN = 12;
-static const int TFT_CS_PIN = 9;
+static const int TFT_SCLK_PIN = 8;
+static const int TFT_MOSI_PIN = 9;
+static const int TFT_CS_PIN = 12;
 static const int TFT_DC_PIN = 10;
 static const int TFT_RESET_PIN = 11;
-static const int TFT_BACKLIGHT_PIN = -1;
+// Backlight ("LED") line, added with the v2.76 rewire — driven HIGH at
+// panel init and LOW before the low-battery deep sleep. -1 would mean no
+// firmware control (the old wiring).
+static const int TFT_BACKLIGHT_PIN = 18;
+// This ILI9341 module's IPS panel shows inverted colors (photo-negative)
+// without the polarity-inversion command — bench-confirmed v2.82.
+static const bool TFT_INVERT_COLORS = true;
+// Wired on the display breakout but UNUSED: software SPI writes only, so
+// there is nothing to read. Documented so the pin isn't reused by mistake.
+static const int TFT_MISO_PIN = 17;
 static const int TFT_NATIVE_WIDTH = 240;
 static const int TFT_NATIVE_HEIGHT = 320;
 
 // ---- MAX7219 8x8 LED Matrix displays (2 cascaded modules: 0=Away, 1=Home) --
+// DIN was not on the v2.76 rewire list and stays on its old pin — CONFIRM
+// against the physical wiring. NOTE: CLK on GPIO 20 is the ESP32-S3's
+// native USB D+ line, so the devkit's native USB-C port can't be used for
+// Serial or flashing on this wiring — serial/flash go through the CH343
+// UART port (see the USB CDC note in platformio.ini).
 static const int MAX7219_DIN_PIN = 14;
-static const int MAX7219_CLK_PIN = 8;
-static const int MAX7219_CS_PIN = 16;
+static const int MAX7219_CLK_PIN = 20;
+static const int MAX7219_CS_PIN = 21;
 
 // ---- Discrete Count LEDs (GPIO pins; balls/strikes/outs) --------------------
-static const int BALL_3_PIN = 1;
-static const int BALL_2_PIN = 2;
-static const int BALL_1_PIN = 3;
-static const int STRIKE_2_PIN = 4;
-static const int STRIKE_1_PIN = 5;
-static const int OUT_2_PIN = 6;
-static const int OUT_1_PIN = 7;
+// v2.76 rewire: moved off GPIO 1-7 so those ADC1-capable pins are free for
+// the battery-sense divider. OUT_1 sits on GPIO 48 — the devkit's onboard
+// RGB (WS2812) data line, repurposed as a plain output for the LED (a
+// driven line keeps the onboard RGB dark; the shell's old pin-48-low RGB
+// hack was removed for this). GPIO 46 is free/unused (bench-confirmed
+// pin map, v2.81).
+static const int BALL_3_PIN = 40;
+static const int BALL_2_PIN = 41;
+static const int BALL_1_PIN = 42;
+static const int STRIKE_2_PIN = 38;
+static const int STRIKE_1_PIN = 39;
+static const int OUT_2_PIN = 47;
+static const int OUT_1_PIN = 48;
+
+// ---- Network-down indicator -------------------------------------------------
+// While the board has no network link, ALL seven count lamps (balls 3 /
+// strikes 2 / outs 2) flash together (see setCountLedsBlink + the shell's
+// loop); the counts themselves resume the moment the link returns.
+static const uint8_t NETWORK_DOWN_BLINK_COUNT_A = 3;
+static const uint8_t NETWORK_DOWN_BLINK_COUNT_B = 2;
+static const uint8_t NETWORK_DOWN_BLINK_COUNT_C = 2;
+
+// ---- Board ------------------------------------------------------------------
+// YD-ESP32-S3-family devkit (same board as the NHL scoreboard, N8R8
+// module). The onboard RGB LED's data line (GPIO 48) is repurposed as the
+// OUT 2 count LED on this wiring — see the count-LED section above.
 
 // ---- Branding (AP network name, hostname, portal title) ---------------------
 static const char* NETWORK_AP_SSID = "BASEBALL_SCOREBOARD";
@@ -57,22 +90,36 @@ static const char* NETWORK_HOSTNAME = "baseball-scoreboard";
 //     a row trigger the low-battery screen + deep sleep. Recovery needs a
 //     power cycle after charging.
 //   * BATTERY_SENSE_ENABLED = true (divider wired, see below): the pack
-//     voltage is read at boot — the ONLY time ADC2 is free, Wi-Fi claims
-//     it afterwards — and at/below BATTERY_LOW_VOLTS the board shows the
-//     low-battery screen and deep-sleeps immediately (no cycling first).
-//     While asleep it silently re-checks every BATTERY_RECHECK_MS and
-//     resumes on its own once the charger lifts the pack past
-//     BATTERY_RESUME_VOLTS.
+//     voltage is read at boot and at/below BATTERY_LOW_VOLTS the board
+//     shows the low-battery screen and deep-sleeps immediately (no cycling
+//     first). While asleep it silently re-checks every BATTERY_RECHECK_MS
+//     and resumes on its own once the charger lifts the pack past
+//     BATTERY_RESUME_VOLTS. The same divider ALSO feeds the RUNTIME GAUGE
+//     (on-screen battery icon + diagnostics readout, v2.75) — but only
+//     when BATTERY_SENSE_PIN is an ADC1 GPIO (1-10): ADC2 is claimed by
+//     Wi-Fi the moment it starts. The v2.76 rewire freed GPIO 1-7, and the
+//     divider pin defaults to GPIO 7 (ADC1_CH6 — the same pin the NHL
+//     board's gauge uses); CONFIRM it against the physical divider before
+//     flipping BATTERY_SENSE_ENABLED.
 // Divider wiring: BAT+ (after the switch / boost input +) --[470k]--
 // BATTERY_SENSE_PIN --[470k]-- GND, with 100 nF across the lower resistor.
 static const bool BATTERY_SENSE_ENABLED = false;   // flip once divider wired
-static const int BATTERY_SENSE_PIN = 17;           // ADC2_CH6, free on this build
+static const int BATTERY_SENSE_PIN = 7;            // ADC1_CH6 (free since the v2.76 LED rewire)
 static const float BATTERY_SENSE_DIVIDER = 2.0f;   // (R1 + R2) / R2
-static const float BATTERY_LOW_VOLTS = 3.40f;      // boot reading that trips shutdown
+static const float BATTERY_LOW_VOLTS = 3.40f;      // boot reading that trips shutdown; gauge's empty floor
+static const float BATTERY_FULL_VOLTS = 4.18f;     // charger termination; gauge's full ceiling
 static const float BATTERY_RESUME_VOLTS = 3.90f;   // re-check resume (charger present)
 static const uint32_t BATTERY_RECHECK_MS = 900000; // silent re-check while asleep (15 min)
+static const uint32_t BATTERY_MONITOR_INTERVAL_MS = 30000;  // runtime gauge sample cadence
 static const uint8_t BATTERY_BAD_BOOT_STREAK = 3;  // bad boots before the backstop trips
 static const uint32_t BATTERY_HEALTHY_BOOT_MS = 90000; // uptime that marks a boot healthy
+
+// ---- MAX98357 I2S audio amp (score sounds) ----------------------------------
+// Same amp wiring as the NHL board; set from the v2.76 rewire list
+// (BCLK=5, LRC=4, DIN=6 — the pins the count LEDs vacated).
+static const int I2S_BCLK_PIN = 5;
+static const int I2S_LRC_PIN = 4;
+static const int I2S_DIN_PIN = 6;
 
 // ---- UI theme (RGB565) -------------------------------------------------------
 // Shared by the sport renderer AND the generic boot/OTA screens (they include
