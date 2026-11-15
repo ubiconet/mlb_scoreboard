@@ -1,5 +1,13 @@
 {
-  "version": "v2.83",
+  "version": "v2.84",
   "file": "mlb_scoreboard_latest.bin",
-  "url": "https://raw.githubusercontent.com/ubiconet/mlb_scoreboard/main/releases/mlb_scoreboard_latest.bin"
+  "url": "https://raw.githubusercontent.com/ubiconet/mlb_scoreboard/main/releases/mlb_scoreboard_latest.bin",
+  "factoryFile": "mlb_scoreboard_latest_factory.bin",
+  "factoryUrl": "https://raw.githubusercontent.com/ubiconet/mlb_scoreboard/main/releases/mlb_scoreboard_latest_factory.bin",
+  "bootloaderFile": "mlb_scoreboard_latest_bootloader.bin",
+  "bootloaderUrl": "https://raw.githubusercontent.com/ubiconet/mlb_scoreboard/main/releases/mlb_scoreboard_latest_bootloader.bin",
+  "partitionsFile": "mlb_scoreboard_latest_partitions.bin",
+  "partitionsUrl": "https://raw.githubusercontent.com/ubiconet/mlb_scoreboard/main/releases/mlb_scoreboard_latest_partitions.bin",
+  "bootApp0File": "mlb_scoreboard_latest_boot_app0.bin",
+  "bootApp0Url": "https://raw.githubusercontent.com/ubiconet/mlb_scoreboard/main/releases/mlb_scoreboard_latest_boot_app0.bin"
 }
