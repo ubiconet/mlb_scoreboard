@@ -1,3 +1,5 @@
+#include <esp_heap_caps.h>
+
 #include "config.h"
 #include "tft_panel.h"
 
@@ -6,7 +8,8 @@ TftPanel tftPanel;
 
 void TftPanel::begin(int csPin, int dcPin, int mosiPin, int sclkPin,
                      int resetPin, int nativeWidth, int nativeHeight,
-                     int rotation, int backlightPin, int misoPin) {
+                     int rotation, int backlightPin, int misoPin,
+                     int outputRotationDeg) {
   if (tft_ == nullptr) {
     // Soft-SPI form, same reasoning as the ST7789 boards before it (see
     // tft_panel.h): the hardware-SPI constructor binds to the variant's
@@ -20,16 +23,42 @@ void TftPanel::begin(int csPin, int dcPin, int mosiPin, int sclkPin,
     pinMode(backlightPin_, OUTPUT);
     digitalWrite(backlightPin_, LOW);
   }
-  (void)nativeWidth;
-  (void)nativeHeight;  // ILI9341 is a fixed 240x320 panel — begin() inits it
   tft_->begin();
-  tft_->setRotation(rotation);
-  // IPS panels on these modules ship with inverted polarity (colors look
-  // like a photo negative without this); TFT_INVERT_COLORS flips it back.
-  tft_->invertDisplay(TFT_INVERT_COLORS);
-  // Logical (post-rotation) frame size the canvas and push calls use.
+
+  // Logical (canvas/UI) frame size: rotation 1/3 = landscape.
   w_ = (rotation % 2 == 1) ? nativeHeight : nativeWidth;
   h_ = (rotation % 2 == 1) ? nativeWidth : nativeHeight;
+
+  // Sideways-glass mode: the driver always runs its portrait rotation and
+  // pushes transpose; the two mirror directions differ by 180 degrees, so
+  // a wrong sign shows the image upside-down — flip the config constant.
+  outputRotDeg_ = (outputRotationDeg == 90 || outputRotationDeg == -90)
+                      ? outputRotationDeg
+                      : 0;
+  if (outputRotDeg_ != 0) {
+    pw_ = nativeWidth;   // panel-portrait grid: 240 wide...
+    ph_ = nativeHeight;  // ...320 tall
+    mirror_ = (uint16_t*)heap_caps_malloc((size_t)pw_ * ph_ * sizeof(uint16_t),
+                                          MALLOC_CAP_SPIRAM);
+    scratch_ = (uint16_t*)heap_caps_malloc(
+        (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    if (mirror_ == nullptr || scratch_ == nullptr) {
+      // PSRAM unexpectedly unavailable — degrade to direct output rather
+      // than blanking the board (the image then sits sideways, matching
+      // the physical mounting).
+      free(mirror_);
+      free(scratch_);
+      mirror_ = scratch_ = nullptr;
+      outputRotDeg_ = 0;
+    }
+  }
+
+  if (outputRotDeg_ != 0) {
+    tft_->setRotation(0);
+  } else {
+    tft_->setRotation(rotation);
+  }
+
   // begin() ends by switching the display on with RAM still undefined —
   // the classic boot "snow". Blank the panel behind a display-off so the
   // fill itself is never visible either; the panel comes up clean black
@@ -83,27 +112,93 @@ void TftPanel::releaseCanvas() {
   sCanvasPtr = nullptr;
 }
 
+bool TftPanel::pushRotated(const uint16_t* src, int rowY, int rowH) {
+  if (mirror_ == nullptr || scratch_ == nullptr || src == nullptr) {
+    return false;
+  }
+  // Transpose the requested logical rows into the panel-portrait mirror.
+  // The two directions are proper 90° rotations that differ by 180°:
+  //   -90: mirror[(w_-1-x)*pw_ + y]        = src[y*w_ + x]
+  //   +90: mirror[ x     *pw_ + (h_-1-y)]  = src[y*w_ + x]
+  const int y0 = (rowH > 0) ? rowY : 0;
+  const int y1 = (rowH > 0) ? (rowY + rowH) : h_;
+  if (outputRotDeg_ < 0) {
+    for (int y = y0; y < y1; ++y) {
+      const uint16_t* row = src + (size_t)y * w_;
+      for (int x = 0; x < w_; ++x) {
+        mirror_[(size_t)(w_ - 1 - x) * pw_ + y] = row[x];
+      }
+    }
+  } else {
+    for (int y = y0; y < y1; ++y) {
+      const uint16_t* row = src + (size_t)y * w_;
+      for (int x = 0; x < w_; ++x) {
+        mirror_[(size_t)x * pw_ + (h_ - 1 - y)] = row[x];
+      }
+    }
+  }
+  if (rowH > 0 && rowY > 0 && (rowY + rowH) < h_) {
+    // Band push: logical rows [rowY, rowY+rowH) live in mirror columns
+    // [rowY, rowY+rowH); pack that stripe into scratch_ (row-major,
+    // width rowH) and write just it. A band touching the frame edges
+    // takes the full-frame path below — cheaper than two stripes.
+    for (int py = 0; py < ph_; ++py) {
+      const uint16_t* mrow = mirror_ + (size_t)py * pw_ + rowY;
+      uint16_t* srow = scratch_ + (size_t)py * rowH;
+      for (int k = 0; k < rowH; ++k) {
+        srow[k] = mrow[k];
+      }
+    }
+    tft_->drawRGBBitmap(rowY, 0, scratch_, rowH, ph_);
+  } else {
+    tft_->drawRGBBitmap(0, 0, mirror_, pw_, ph_);
+  }
+  return true;
+}
+
 void TftPanel::pushFull() {
   // Skip while the canvas is un-allocatable (stub active): pushing would
   // read w*h pixels out of the 1x1 stub buffer.
   if (tft_ == nullptr || sCanvasPtr == nullptr) return;
-  GFXcanvas16& c = canvas();
+  GFXcanvas16& c = *sCanvasPtr;
+  if (outputRotDeg_ != 0) {
+    pushRotated(c.getBuffer(), 0, 0);
+    return;
+  }
   tft_->drawRGBBitmap(0, 0, c.getBuffer(), w_, h_);
 }
 
 void TftPanel::pushBand(int y, int h) {
   if (tft_ == nullptr || sCanvasPtr == nullptr) return;
-  GFXcanvas16& c = canvas();
+  GFXcanvas16& c = *sCanvasPtr;
+  if (outputRotDeg_ != 0) {
+    pushRotated(c.getBuffer(), y, h);
+    return;
+  }
   tft_->drawRGBBitmap(0, y, c.getBuffer() + (size_t)y * w_, w_, h);
 }
 
 void TftPanel::pushRows(int x, int y, int w, int h) {
   if (tft_ == nullptr || sCanvasPtr == nullptr) return;
-  GFXcanvas16& c = canvas();
+  GFXcanvas16& c = *sCanvasPtr;
+  if (outputRotDeg_ != 0) {
+    // Rotated output has no cheap sub-rectangle mapping — refresh the
+    // enclosing full-width band (overdraw within the band is harmless).
+    pushRotated(c.getBuffer(), y, h);
+    return;
+  }
   for (int row = 0; row < h; ++row) {
     tft_->drawRGBBitmap(x, y + row,
                         c.getBuffer() + (size_t)(y + row) * w_ + x, w, 1);
   }
+}
+
+void TftPanel::pushExternal(const GFXcanvas16& c) {
+  if (tft_ == nullptr) return;
+  if (outputRotDeg_ != 0) {
+    if (pushRotated(c.getBuffer(), 0, 0)) return;
+  }
+  tft_->drawRGBBitmap(0, 0, c.getBuffer(), w_, h_);
 }
 
 Adafruit_ILI9341& TftPanel::raw() {

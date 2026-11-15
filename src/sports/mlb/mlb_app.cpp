@@ -543,8 +543,9 @@ void setup() {
   //runMax7219BootTest();
 
   tftPanel.begin(TFT_CS_PIN, TFT_DC_PIN, TFT_MOSI_PIN, TFT_SCLK_PIN,
-                 TFT_RESET_PIN, TFT_NATIVE_WIDTH, TFT_NATIVE_HEIGHT, 1,
-                 TFT_BACKLIGHT_PIN, TFT_MISO_PIN);
+                 TFT_RESET_PIN, TFT_NATIVE_WIDTH, TFT_NATIVE_HEIGHT,
+                 TFT_ROTATION, TFT_BACKLIGHT_PIN, TFT_MISO_PIN,
+                 TFT_OUTPUT_ROTATION_DEG);
 
     // TEST ONLY: cycles ball/strike/out LEDs one at a time; leave enabled during hardware validation.
   runCountLedTestLoop();

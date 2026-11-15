@@ -46,4 +46,11 @@ extern size_t otherGameCount;
 // 1 + otherGameCount: On Deck slide plus one league game per slide.
 size_t tickerSlideCount();
 
+// Drops the live frame's dirty-rect cache so the next renderLinescore()
+// repaints AND pushes everything. Call whenever another screen drew into
+// the shared canvas (waiting idle pages, the at-bat card) — with the
+// steady-state band push (v2.85) a stale tracker would otherwise leave
+// the other screen's pixels standing above the bottom panel.
+void invalidateLiveFrame();
+
 }  // namespace mlb_render

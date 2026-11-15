@@ -464,9 +464,11 @@ void refreshScanCache() {
 }
 
 void renderAccessPointInstructions(const String& portalAddress, bool stationConnected) {
-  // Direct panel draw (no canvas): this screen replaces everything during
-  // provisioning and nothing else renders while it is up.
-  Adafruit_ILI9341& display = tftPanel.raw();
+  // Drawn into the shared canvas (v2.85) so the sideways-glass rotate-at-
+  // push path applies, like every other screen; pushed in one call below.
+  // This screen replaces everything during provisioning and nothing else
+  // renders while it is up.
+  GFXcanvas16& display = tftPanel.canvas();
   String portalUrl = "http://" + portalAddress + "/";
 
   display.fillScreen(0x012B);
@@ -563,6 +565,7 @@ void renderAccessPointInstructions(const String& portalAddress, bool stationConn
       }
     }
   }
+  tftPanel.pushFull();
 }
 
 String readConfig() {

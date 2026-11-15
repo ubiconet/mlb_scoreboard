@@ -355,6 +355,10 @@ void drawBottomPanel(Adafruit_GFX& target, const LinescoreSnapshot& ls) {
 }
 } // namespace
 
+void mlb_render::invalidateLiveFrame() {
+  gHasRendered = false;  // dirty-rect tracker: next render is a full one
+}
+
 size_t mlb_render::tickerSlideCount() {
   return 1 + otherGameCount; // On Deck slide + one league game per slide
 }
@@ -615,7 +619,7 @@ void forceLiveRepaint() {
       !mlb_render::currentLinescore.valid) {
     return;
   }
-  gHasRendered = false;  // dirty-rect tracker: repaint everything
+  mlb_render::invalidateLiveFrame();
   renderLinescore(mlb_render::currentLinescore);
 }
 
@@ -708,18 +712,35 @@ void renderLinescore(const LinescoreSnapshot& ls) {
   // Battery gauge (gauge-capable boards only — quarters 255/unknown hides
   // it): drawn in the away card's top-right corner, clear of the AWAY
   // label and the 64x64 logo below it. Quarter changes are rare, so it
-  // only redraws on a change or a full repaint; the push below carries it.
+  // only redraws on a change or a full repaint; on a steady-state frame
+  // it pushes its own little region (the band push below skips it).
   {
     uint8_t bq = power::batteryQuarters();
     int bqDrawn = (bq <= 4) ? (int)bq : -1;
     if (bqDrawn != gRendered.battQuarters || needsFullRepaint) {
       gRendered.battQuarters = bqDrawn;
-      if (bqDrawn >= 0) drawBatteryIndicator(canvas, 290, 8, (uint8_t)bqDrawn);
+      if (bqDrawn >= 0) {
+        drawBatteryIndicator(canvas, 290, 8, (uint8_t)bqDrawn);
+        if (!needsFullRepaint) tftPanel.pushRows(288, 6, 26, 14);
+      }
     }
   }
 
-  // Single-pass push to physical TFT display (flicker-free)
-  tftPanel.pushFull();
+  // Push to the physical TFT. A FULL 320x240 push takes on the order of a
+  // second on this bit-banged bus — pushing it every tick kept the panel
+  // mid-sweep almost permanently, which showed up as a horizontal tear
+  // seam wherever a photo (or a glance) caught it (bench-confirmed v2.84:
+  // static screens render perfectly; only the every-second demo frame
+  // ever tore). So push only what changed: full repaints push full;
+  // steady-state frames changed nothing above row 108 — scores and the
+  // count live on the matrices and LEDs, the cards/diamond/inning header
+  // are tracker-gated — so just the bottom panel band goes out (~1/3 of
+  // the frame → the tear window shrinks by the same factor).
+  if (needsFullRepaint) {
+    tftPanel.pushFull();
+  } else {
+    tftPanel.pushBand(108, 124);
+  }
 
   gRendered.gamePk        = ls.gamePk;
   gRendered.awayScore     = ls.awayScore;

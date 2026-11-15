@@ -36,6 +36,14 @@ static const bool TFT_INVERT_COLORS = true;
 static const int TFT_MISO_PIN = 17;
 static const int TFT_NATIVE_WIDTH = 240;
 static const int TFT_NATIVE_HEIGHT = 320;
+// Sideways-mounted panel (v2.85): the ILI9341 module's header edge sits on
+// the RIGHT of the display opening and the mounting can't be turned, so the
+// glass pixel grid is rotated a quarter-turn from the viewer. Every frame
+// is transposed 90 degrees on its way to the panel (TftPanel's rotate-at-
+// push mode, PSRAM-backed). -90 vs +90 picks the direction; they differ by
+// 180 degrees, so a wrong sign shows the image upside-down — flip it then.
+static const int TFT_ROTATION = 1;
+static const int TFT_OUTPUT_ROTATION_DEG = -90;
 
 // ---- MAX7219 8x8 LED Matrix displays (2 cascaded modules: 0=Away, 1=Home) --
 // DIN was not on the v2.76 rewire list and stays on its old pin — CONFIRM

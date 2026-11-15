@@ -17,11 +17,25 @@ char gOtaTargetVersion[16] = "";
 // stopped, canvas freed); cleared again on stage NONE.
 volatile bool gDisplayParked = false;
 
-// The update screen draws DIRECTLY to the panel — the second sanctioned
-// direct-draw screen after the AP provisioning page. During an install the
-// display is parked (canvas freed so the TLS download fits the heap), so the
-// canvas cannot be trusted to exist here; the panel can.
-void drawOtaProgressBar(Adafruit_ILI9341& tft) {
+// The update screen draws into its OWN canvas — during an install the
+// shared canvas is parked (freed so the TLS download fits the heap), so
+// this screen carries a dedicated 320x240 buffer (PSRAM; allocated once
+// on first use and kept — an update session is rare and short). It goes
+// out through tftPanel.pushExternal(), which applies the sideways-glass
+// output rotation like every other push.
+GFXcanvas16& otaCanvas() {
+  static GFXcanvas16* sCanvas = nullptr;
+  if (sCanvas == nullptr) {
+    sCanvas = new GFXcanvas16(tftPanel.width(), tftPanel.height());
+    if (sCanvas == nullptr) {
+      static GFXcanvas16 stub(1, 1);
+      return stub;
+    }
+  }
+  return *sCanvas;
+}
+
+void drawOtaProgressBar(Adafruit_GFX& tft) {
   tft.drawRoundRect(20, 140, 280, 22, 4, COLOR_MUTED);
   int fillW = (gOtaProgress > 100 ? 100 : gOtaProgress) * 276 / 100;
   if (fillW > 0) tft.fillRoundRect(22, 142, fillW, 18, 3, COLOR_LED_RED);
@@ -33,7 +47,7 @@ void drawOtaProgressBar(Adafruit_ILI9341& tft) {
 }
 
 void renderOtaUpdateScreen() {
-  Adafruit_ILI9341& tft = tftPanel.raw();
+  GFXcanvas16& tft = otaCanvas();
   tft.fillScreen(COLOR_BG);
 
   tft.setTextColor(COLOR_GOLD);
@@ -64,6 +78,7 @@ void renderOtaUpdateScreen() {
     drawCenteredText(tft, "Update failed - check network", 160, 92);
     drawCenteredText(tft, "Normal operation continues", 160, 104);
   }
+  tftPanel.pushExternal(tft);
 }
 }  // namespace
 
@@ -111,9 +126,10 @@ bool handleOtaUpdateScreen() {
   }
   if (gOtaStage == OtaStage::DOWNLOADING && gOtaProgress != sLastDrawnPct) {
     sLastDrawnPct = gOtaProgress;
-    Adafruit_ILI9341& tft = tftPanel.raw();
+    GFXcanvas16& tft = otaCanvas();
     tft.fillRect(20, 136, 280, 68, COLOR_BG);
     drawOtaProgressBar(tft);
+    tftPanel.pushExternal(tft);
   }
   return true;
 }

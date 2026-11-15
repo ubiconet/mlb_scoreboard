@@ -133,6 +133,10 @@ void drawIdlePage() {
 void renderWaiting(const ScheduleSnapshot* schedule, const NewsSnapshot* news,
                    const StandingsSnapshot* standings) {
   mlb_render::hasCurrentLiveGame = false;
+  // The idle pages draw into the shared canvas; drop the live frame's
+  // dirty-rect cache so a resumed live game repaints everything (the
+  // steady-state band push would keep these pixels above row 108).
+  mlb_render::invalidateLiveFrame();
   mlb_render::otherGameCount = 0;
   mlb_render::tickerSlide = 0;
   mlb_render::lastCarouselTime = millis();
