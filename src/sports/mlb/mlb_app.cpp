@@ -572,7 +572,11 @@ void tick(const SportTickContext& ctx) {
       case 2: tftPanel.setOutputMode(0, -90); break;  // C: transpose -90
       case 3: tftPanel.setOutputMode(0, 90);  break;  // D: transpose +90
       case 4: tftPanel.setOutputMode(2, -90); break;  // E: rot 2, -90
-      default: tftPanel.setOutputMode(2, 90); break;  // F: rot 2, +90
+      case 5: tftPanel.setOutputMode(2, 90); break;   // F: rot 2, +90
+      case 6: tftPanel.setRawOutputMode(0x28, -90); break;  // G: MV|BGR
+      case 7: tftPanel.setRawOutputMode(0x28, 90); break;   // H: MV|BGR
+      case 8: tftPanel.setRawOutputMode(0xE8, -90); break;  // I: MY|MV|BGR
+      default: tftPanel.setRawOutputMode(0xE8, 90); break;  // J: MY|MV|BGR
     }
     invalidateManualScreen();
     resetAtBatResultDisplay();

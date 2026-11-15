@@ -15,7 +15,7 @@ void TftPanel::begin(int csPin, int dcPin, int mosiPin, int sclkPin,
     // Soft-SPI form, same reasoning as the ST7789 boards before it (see
     // tft_panel.h): the hardware-SPI constructor binds to the variant's
     // default VSPI pins instead of ours.
-    tft_ = new Adafruit_ILI9341(csPin, dcPin, mosiPin, sclkPin, resetPin,
+    tft_ = new RawWindowILI9341(csPin, dcPin, mosiPin, sclkPin, resetPin,
                                 misoPin);
   }
   backlightPin_ = backlightPin;
@@ -91,6 +91,33 @@ void TftPanel::begin(int csPin, int dcPin, int mosiPin, int sclkPin,
 void TftPanel::setBacklight(bool on) {
   if (backlightPin_ < 0) return;
   digitalWrite(backlightPin_, on ? HIGH : LOW);
+}
+
+void TftPanel::setRawOutputMode(uint8_t madctl, int transposeDeg) {
+  if (tft_ == nullptr) return;
+  transposeDeg = (transposeDeg == 90) ? 90 : -90;
+  if (mirror_ == nullptr) {
+    if (!psramFound()) psramInit();
+    if (psramFound()) {
+      if (mirror_ == nullptr) {
+        mirror_ = (uint16_t*)heap_caps_malloc(
+            (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+      }
+      if (scratch_ == nullptr) {
+        scratch_ = (uint16_t*)heap_caps_malloc(
+            (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+      }
+    }
+    if (mirror_ == nullptr) {
+      Serial.println("[HW] PSRAM unavailable - raw mode rejected");
+      return;
+    }
+  }
+  rawMadctl_ = 0;        // leave any previous raw mode first
+  outputRotDeg_ = transposeDeg;
+  rawMadctl_ = madctl;
+  Serial.printf("[HW] panel RAW output mode: MADCTL 0x%02x, transpose %d\n",
+                madctl, transposeDeg);
 }
 
 void TftPanel::setOutputMode(int driverRotation, int transposeDeg) {
@@ -183,6 +210,12 @@ bool TftPanel::pushRotated(const uint16_t* src, int rowY, int rowH) {
         mirror_[(size_t)x * pw_ + (h_ - 1 - y)] = row[x];
       }
     }
+  }
+  if (rawMadctl_ != 0) {
+    // Raw mode owns the panel: the transposed frame goes to the glass's
+    // full native grid in one write (band/stripe packing not applicable).
+    tft_->writeRawFrame(mirror_, pw_, ph_, rawMadctl_);
+    return true;
   }
   if (rowH > 0 && rowY > 0 && (rowY + rowH) < h_) {
     // Band push: logical rows [rowY, rowY+rowH) live in mirror columns

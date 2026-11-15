@@ -784,6 +784,10 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
 <button type="button" style="width:auto;padding:10px 14px;margin-top:0" onclick="ori(3)">D</button>
 <button type="button" style="width:auto;padding:10px 14px;margin-top:0" onclick="ori(4)">E</button>
 <button type="button" style="width:auto;padding:10px 14px;margin-top:0" onclick="ori(5)">F</button>
+<button type="button" style="width:auto;padding:10px 14px;margin-top:0;background:#2a5daf;color:#fff" onclick="ori(6)">G</button>
+<button type="button" style="width:auto;padding:10px 14px;margin-top:0;background:#2a5daf;color:#fff" onclick="ori(7)">H</button>
+<button type="button" style="width:auto;padding:10px 14px;margin-top:0;background:#2a5daf;color:#fff" onclick="ori(8)">I</button>
+<button type="button" style="width:auto;padding:10px 14px;margin-top:0;background:#2a5daf;color:#fff" onclick="ori(9)">J</button>
 </p>
 <script>function ori(m){fetch('/display/orientation?mode='+m,{method:'POST'})}</script>
 <hr><h3>Factory Reset</h3>
@@ -825,7 +829,7 @@ fetch('/demo/status').then(function(r){return r.json()}).then(function(s){paintD
 void handlePanelOrientation() {
   markPortalActivity();
   int mode = server.arg("mode").toInt();
-  if (mode < 0 || mode > 5) {
+  if (mode < 0 || mode > 9) {
     server.send(400, "text/plain", "Bad mode");
     return;
   }

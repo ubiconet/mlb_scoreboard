@@ -3,6 +3,21 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 
+// Exposes SPITFT's protected address-window control so a frame can be
+// written RAW onto the glass's full native grid with any MADCTL byte —
+// for panels whose native geometry doesn't match the library's rotation
+// table (the MLB board's landscape-native 320x240 ILI9341, v2.88).
+class RawWindowILI9341 : public Adafruit_ILI9341 {
+ public:
+  using Adafruit_ILI9341::Adafruit_ILI9341;
+  void writeRawFrame(uint16_t* pixels, uint16_t w, uint16_t h,
+                     uint8_t madctl) {
+    sendCommand(ILI9341_MADCTL, &madctl, 1);
+    setAddrWindow(0, 0, w - 1, h - 1);
+    writePixels(pixels, (uint32_t)w * h, true, false);
+  }
+};
+
 // TftPanel — owns the TFT panel plus the one shared full-screen render
 // canvas every screen draws into. All rendering rasterizes onto the canvas;
 // exactly one push call then moves pixels to the panel, so each screen has
@@ -46,6 +61,14 @@ class TftPanel {
   // of 0 / 90 / -90 (the rotate-at-push mode). Repaint the screen after
   // calling — the previous frame's pixels are reinterpreted, not moved.
   void setOutputMode(int driverRotation, int transposeDeg);
+
+  // RAW output mode (picker modes G-J): writes the transposed frame onto
+  // the glass's FULL native grid (320 cols x 240 rows) with an explicit
+  // MADCTL byte, bypassing the library's rotation geometry — for the
+  // landscape-native panel, whose portrait rotations only address 240 of
+  // the 320 columns (the "not quite wide enough" modes E/F). transposeDeg
+  // is +90 or -90 (frame handedness). Repaint afterwards.
+  void setRawOutputMode(uint8_t madctl, int transposeDeg);
 
   // Double-buffer canvas (153.6 KB at 320x240), lazily allocated ONCE on
   // first use — never from the render loop's hot path. If the heap is
@@ -91,7 +114,8 @@ class TftPanel {
   // unavailable — callers fall back to the direct path.
   bool pushRotated(const uint16_t* src, int rowY, int rowH);
 
-  Adafruit_ILI9341* tft_ = nullptr;
+  RawWindowILI9341* tft_ = nullptr;  // raw subclass; base API still applies
+  uint8_t rawMadctl_ = 0;       // nonzero while the raw output mode owns the panel
   int w_ = 0;
   int h_ = 0;
   int backlightPin_ = -1;
