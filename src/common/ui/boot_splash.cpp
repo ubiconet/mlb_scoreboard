@@ -11,9 +11,10 @@ void renderBootSplash(int logoWidth, int logoHeight, const uint16_t* logoPixels)
   // The splash's canvas() call is the FIRST allocation of the render canvas,
   // deliberately: the pristine pre-Wi-Fi heap always fits the 153.6 KB block
   // (post-association fragmentation may not — measured maxAlloc 33 KB after
-  // the feeds start). This is safe now that the boot OTA check runs over
-  // plain HTTP: nothing at boot needs the canvas freed. Only install-time
-  // TLS parks the display (see common/comms/ota_update.cpp).
+  // the feeds start, on the old 4MB board). This stays safe with the TLS
+  // boot OTA check (v2.84): the N8R8 board's PSRAM heap funds the handshake
+  // beside the canvas. Only install-time TLS parks the display (see
+  // common/comms/ota_update.cpp).
   GFXcanvas16& canvas = tftPanel.canvas();
   canvas.fillScreen(COLOR_BG);
 

@@ -156,9 +156,10 @@ bool streamBodyToFlash(HTTPClient& http, int total) {
 }  // namespace
 
 void serviceOtaUpdates(uint32_t onlineForMs) {
-  // Check once, early, over plain HTTP (the manifest mirror in
-  // src/config.h): no TLS is involved, so the check runs fine beside the
-  // render canvas and the feed session. The feed fetches still wait for
+  // Check once, early, over TLS from the website manifest mirror (see
+  // src/config.h) — the NHL-board flow, v2.84. The N8R8 module's PSRAM
+  // heap funds the handshake beside the render canvas, so the check needs
+  // no display park; the feed fetches still wait for
   // otaBootGateReached() so the check gets the first network window.
   // A portal-requested check bypasses the pacing (the user is watching).
   bool requested = sCheckRequested;
@@ -167,10 +168,8 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
     if (onlineForMs < OTA_FIRST_CHECK_AFTER_ONLINE_MS) return;
     // Boot-only policy: exactly one automatic check session per boot (the
     // boot attempts below), while the heap is still pristine. No periodic
-    // mid-session recheck — on this network the post-feed heap can't
-    // reliably fund a TLS handshake, and a display board that wants an
-    // update can simply be power-cycled. The portal's "check now" still
-    // bypasses this pacing on demand.
+    // mid-session recheck — a display board that wants an update can
+    // simply be power-cycled.
     if (sCheckedOnce) return;
     uint32_t now = millis();
     if (sBootAttempts > 0 && (now - sLastCheckAt) < 5000) {
@@ -197,10 +196,14 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
     return;
   }
 
-  // The manifest comes over PLAIN HTTP (see src/config.h): no TLS, so the
-  // check needs no display park and no pristine heap — it runs beside the
-  // render canvas on any boot.
-  WiFiClient manifestClient;
+  // The manifest comes over TLS from the website mirror (see src/config.h)
+  // — insecure validation like the feeds (public data; also immune to the
+  // pre-NTP clock making cert times fail). Beside the canvas this fits
+  // the PSRAM-era heap, so no display park is needed for the CHECK; only
+  // a found update's binary download parks the display (below).
+  WiFiClientSecure manifestClient;
+  manifestClient.setInsecure();
+  manifestClient.setHandshakeTimeout(10);
   HTTPClient http;
   auto concludeNoUpdate = [&]() {
     http.end();
@@ -264,16 +267,15 @@ void serviceOtaUpdates(uint32_t onlineForMs) {
              manifestVersion);
   setOtaTargetVersion(manifestVersion);
 
-  // ---- Install phase: the binary downloads over TLS (raw.githubusercontent
-  // has no plain-HTTP mirror that serves large files). TLS beside the
-  // 153.6 KB render canvas does NOT fit this heap — the 2x16 KB SSL
-  // buffers cannot be shrunk on this core (setBufferSizes is a 3.x API;
-  // 2.0.x bakes MBEDTLS_SSL_{IN,OUT}_CONTENT_LEN into the prebuilt
-  // mbedTLS) — so park the display (canvas freed) for the handshake and
-  // the download. A successful install reboots immediately, so the canvas
-  // never needs to fit back after TLS churn; only a FAILED install
-  // continues the session with a possibly stale screen.
-  http.end();  // release the plain-HTTP manifest socket first
+  // ---- Install phase: the binary downloads over TLS from the website
+  // mirror named in the manifest. The download is long enough (2 MB over
+  // this lossy Wi-Fi) that the display PARKS for it anyway — canvas freed
+  // so the TLS session, socket buffers, and flash writes get the whole
+  // heap — and the progress screen draws direct to the panel. A
+  // successful install reboots immediately, so the canvas never needs to
+  // fit back after TLS churn; only a FAILED install continues the
+  // session with a possibly stale screen.
+  http.end();  // release the manifest's TLS socket first
   publishOtaStage(OtaStage::CHECKING, 0);
   uint32_t parkDeadline = millis() + 3000;
   while (!otaDisplayParked() && millis() < parkDeadline) delay(10);

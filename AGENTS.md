@@ -231,41 +231,46 @@ point the env's src filter + `-I` at it, update `OTA_*` URLs in
 ### Releases + firmware self-update
 
 - **One-command release:** `pio run -e esp32-s3-devkitc-1 -t deploy`.
-  This builds the firmware, writes `releases/`
-  (`mlb_scoreboard_latest.bin`, permanent `mlb_scoreboard_<version>.bin`,
-  `manifest.json` with `{"version","file","url"}`), then **commits
-  `releases/` and pushes to GitHub** — the push is what publishes the
-  update. The target refuses to deploy when `FIRMWARE_VERSION` still
-  matches the published manifest version (devices only flash strictly
-  newer versions), so **bump `FIRMWARE_VERSION` in `src/config.h` before
-  every deploy**. GitHub's raw CDN caches the manifest ~5 min after a push.
-- **Self-update flow** (`src/common/comms/ota_update.cpp`): **hybrid
-  transports (v2.70)**. The manifest check runs over PLAIN HTTP from
-  `raw.githack.com` (the one GitHub-raw mirror that still serves plain
-  HTTP — jsDelivr/statically/ghproxy all 301 to HTTPS): the check must
-  run beside the 153.6 KB render canvas, and a TLS handshake
-  (2x16 KB unshrinkable SSL buffers on core 2.0.x + GitHub's cert-chain
-  parse) does not fit this heap alongside it — measured as
-  `X509 - Allocation of memory failed`, and after any TLS churn the
-  largest heap block stays ~2 KB under the canvas size, freezing the
-  display on a stub. The binary download (manifest's `url` field,
-  raw.githubusercontent.com) still uses TLS because no mirror serves
-  large files over HTTP — it runs ONLY when an update exists, with the
-  **display park** engaging first (`OtaStage::CHECKING` → the render
-  core stops and calls `tftPanel.releaseCanvas()`; the updater waits
-  for `otaDisplayParked()`), and a successful install reboots
+  This builds the firmware, writes `releases/` (`mlb_scoreboard_latest.bin`,
+  permanent `mlb_scoreboard_<version>.bin`, a merged `*_factory.bin`,
+  bootloader/partitions/boot_app0 components, and a flasher-tool
+  `manifest.json`), then publishes BOTH copies (NHL-board flow, v2.84):
+  1. **GitHub** — commits `releases/` and pushes to
+     `ubiconet/mlb_scoreboard` (the archive / manual-download copy).
+  2. **Website** — mirrors the release set into `firmware/mlb/` of the
+     sales-site repo (`github.com/ubiconet/scoreboard-site`, clone at
+     `C:\projects\scoreboard-site`, override via `MINIBOARD_SITE_ROOT`),
+     rewrites that copy's manifest URLs to
+     `https://sports-miniboards.com/firmware/mlb`, regenerates the
+     browsable `index.html` pages, commits and pushes — that push
+     publishes Netlify (the site is repo-connected; `_publish_netlify`
+     falls back to a CLI deploy only if the link is missing).
+  The target refuses to deploy when `FIRMWARE_VERSION` still matches the
+  published manifest version (devices only flash strictly newer
+  versions), so **bump `FIRMWARE_VERSION` in `src/config.h` before every
+  deploy**.
+- **Self-update flow** (`src/common/comms/ota_update.cpp`): **website
+  manifest over TLS (v2.84, NHL flow)**. The boot check fetches
+  `https://sports-miniboards.com/firmware/mlb/manifest.json` (no-cache,
+  no CDN lag — GitHub raw cached ~5 min) over an insecure TLS session;
+  the N8R8 board's PSRAM heap funds the handshake beside the 153.6 KB
+  render canvas, so no park is needed for the check. (History: through
+  v2.83 the check ran over plain HTTP from raw.githack.com because the
+  old 4MB board's heap could not fund TLS beside the canvas — don't
+  revive that transport unless the board loses its PSRAM.) When the
+  manifest version is strictly newer, the **display park** engages
+  (`OtaStage::CHECKING` → the render core stops and calls
+  `tftPanel.releaseCanvas()`; the updater waits for
+  `otaDisplayParked()`), the binary downloads over TLS from the site
+  (manifest's `url` field), and a successful install reboots
   immediately so the canvas never needs to fit back after TLS churn.
   The render canvas is allocated by the boot splash's first canvas()
   call, on the pristine PRE-Wi-Fi heap (post-association fragmentation
-  can leave the largest block far below the 153.6 KB the canvas needs
-  — measured 33 KB maxAlloc after feeds start), and the HTTP check
-  runs beside it without any park. Boot sequence: splash (canvas) →
-  plain-HTTP manifest check behind `otaBootGateReached()` in
-  `main.cpp` → status/standby screens. TLS
-  install details: one reused TLS session for the binary (this AP
-  refuses a second fresh handshake moments after the first), progress
-  screen drawn DIRECT to the panel (the canvas is parked), failures leave
-  the
+  can leave the largest block far below the 153.6 KB the canvas needs —
+  measured 33 KB maxAlloc after feeds start on the old board). Install
+  details: one reused TLS session for the binary (this AP refuses a
+  second fresh handshake moments after the first), progress screen
+  drawn DIRECT to the panel (the canvas is parked), failures leave the
   current firmware running (a failed install may leave a stale screen
   until reboot — the canvas may not fit back after TLS churn).
 - **Update checks are BOOT-ONLY** (adopted from the NHL port): the
