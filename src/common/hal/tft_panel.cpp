@@ -1,4 +1,5 @@
 #include <esp_heap_caps.h>
+#include <esp32-hal-psram.h>
 
 #include "config.h"
 #include "tft_panel.h"
@@ -38,10 +39,19 @@ void TftPanel::begin(int csPin, int dcPin, int mosiPin, int sclkPin,
   if (outputRotDeg_ != 0) {
     pw_ = nativeWidth;   // panel-portrait grid: 240 wide...
     ph_ = nativeHeight;  // ...320 tall
-    mirror_ = (uint16_t*)heap_caps_malloc((size_t)pw_ * ph_ * sizeof(uint16_t),
-                                          MALLOC_CAP_SPIRAM);
-    scratch_ = (uint16_t*)heap_caps_malloc(
-        (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    // The transpose buffers need ~300 KB — only PSRAM has that alongside
+    // the render canvas, and the Arduino core does NOT start PSRAM unless
+    // BOARD_HAS_PSRAM is defined (this build follows the NHL board and
+    // leaves it undefined), so bring it up here, explicitly.
+    if (!psramFound()) {
+      psramInit();
+    }
+    if (psramFound()) {
+      mirror_ = (uint16_t*)heap_caps_malloc(
+          (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+      scratch_ = (uint16_t*)heap_caps_malloc(
+          (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+    }
     if (mirror_ == nullptr || scratch_ == nullptr) {
       // PSRAM unexpectedly unavailable — degrade to direct output rather
       // than blanking the board (the image then sits sideways, matching
@@ -50,7 +60,13 @@ void TftPanel::begin(int csPin, int dcPin, int mosiPin, int sclkPin,
       free(scratch_);
       mirror_ = scratch_ = nullptr;
       outputRotDeg_ = 0;
+      Serial.println("[HW] PSRAM unavailable - panel output stays DIRECT "
+                     "(image will sit sideways)");
     }
+  }
+  if (outputRotDeg_ != 0) {
+    Serial.printf("[HW] panel output rotation %d active (PSRAM %u KB)\n",
+                  outputRotDeg_, (unsigned)(ESP.getPsramSize() / 1024));
   }
 
   if (outputRotDeg_ != 0) {
@@ -75,6 +91,37 @@ void TftPanel::begin(int csPin, int dcPin, int mosiPin, int sclkPin,
 void TftPanel::setBacklight(bool on) {
   if (backlightPin_ < 0) return;
   digitalWrite(backlightPin_, on ? HIGH : LOW);
+}
+
+void TftPanel::setOutputMode(int driverRotation, int transposeDeg) {
+  if (tft_ == nullptr) return;
+  driverRotation = ((driverRotation % 4) + 4) % 4;
+  transposeDeg = (transposeDeg == 90 || transposeDeg == -90) ? transposeDeg : 0;
+  if (transposeDeg != 0 && mirror_ == nullptr) {
+    // Transpose requested for the first time since a failed begin-time
+    // allocation — try to bring the buffers up now.
+    if (!psramFound()) psramInit();
+    if (psramFound()) {
+      if (mirror_ == nullptr) {
+        mirror_ = (uint16_t*)heap_caps_malloc(
+            (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+      }
+      if (scratch_ == nullptr) {
+        scratch_ = (uint16_t*)heap_caps_malloc(
+            (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+      }
+    }
+    if (mirror_ == nullptr || scratch_ == nullptr) {
+      free(mirror_);
+      free(scratch_);
+      mirror_ = scratch_ = nullptr;
+      transposeDeg = 0;  // degrade to direct rather than garble
+    }
+  }
+  outputRotDeg_ = transposeDeg;
+  tft_->setRotation(driverRotation);
+  Serial.printf("[HW] panel output mode: driver rotation %d, transpose %d\n",
+                driverRotation, outputRotDeg_);
 }
 
 // File-scope so canvas() and releaseCanvas() share the one pointer.

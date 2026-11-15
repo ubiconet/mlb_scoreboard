@@ -41,6 +41,12 @@ class TftPanel {
   // panel was begun without one).
   void setBacklight(bool on);
 
+  // LIVE output-mode switch (the diagnostics page's orientation picker):
+  // driverRotation 0-3 as the Adafruit lib numbers them, transposeDeg one
+  // of 0 / 90 / -90 (the rotate-at-push mode). Repaint the screen after
+  // calling — the previous frame's pixels are reinterpreted, not moved.
+  void setOutputMode(int driverRotation, int transposeDeg);
+
   // Double-buffer canvas (153.6 KB at 320x240), lazily allocated ONCE on
   // first use — never from the render loop's hot path. If the heap is
   // starved at boot, falls back to a 1x1 stub so the loop paints something

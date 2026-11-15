@@ -89,6 +89,10 @@ volatile bool gameDemoMode = false;
 // core's tick.
 volatile bool displayTestRequested = false;
 
+// Panel-orientation picker request (-1 = none; 0..5 = mode letter A..F).
+// Volatile for the same cross-core handoff as the flags above.
+volatile int panelOrientationRequest = -1;
+
 // Audio-test request from the portal (see consumeAudioTestRequest()).
 // audioTestSoundId carries the picker's preview id; -1 means "the saved
 // selection". The flag/id pair is written before the bool flips, so the
@@ -771,6 +775,17 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
 <button id="demoStart" type="button" style="margin-top:8px" onclick="setDemo(true)">Start Game Demo</button>
 <button id="demoStop" type="button" style="margin-top:8px;background:#2a5daf;color:#fff;display:none" onclick="setDemo(false)">Stop Game Demo</button>
 <p class="hint" id="demoStatus">Demo is stopped.</p>
+<hr><h3>Panel Orientation <small>(bench tool)</small></h3>
+<p class="hint">Tries the six panel output modes live — click each letter and watch the scoreboard screen; one will read upright. Tell support the winning letter.</p>
+<p style="display:flex;gap:6px;flex-wrap:wrap">
+<button type="button" style="width:auto;padding:10px 14px;margin-top:0" onclick="ori(0)">A</button>
+<button type="button" style="width:auto;padding:10px 14px;margin-top:0" onclick="ori(1)">B</button>
+<button type="button" style="width:auto;padding:10px 14px;margin-top:0" onclick="ori(2)">C</button>
+<button type="button" style="width:auto;padding:10px 14px;margin-top:0" onclick="ori(3)">D</button>
+<button type="button" style="width:auto;padding:10px 14px;margin-top:0" onclick="ori(4)">E</button>
+<button type="button" style="width:auto;padding:10px 14px;margin-top:0" onclick="ori(5)">F</button>
+</p>
+<script>function ori(m){fetch('/display/orientation?mode='+m,{method:'POST'})}</script>
 <hr><h3>Factory Reset</h3>
 <p class="hint">Wipes every saved setting back to factory defaults: Wi-Fi credentials, favorite teams, time zone, the score sound, and the idle-clock/audio options. The board reboots onto its setup access point, ready to configure from scratch.</p>
 <button type="button" style="background:#b3261e;color:#fff" onclick="frst()">Factory Reset</button>
@@ -800,6 +815,22 @@ fetch('/demo/status').then(function(r){return r.json()}).then(function(s){paintD
 </main></body></html>)html";
   page.replace("@@NAME@@", netBranding.deviceName);
   server.send(200, "text/html", page);
+}
+
+// Bench tool (diagnostics page): applies one of six panel output modes
+// live — the combos of driver rotation 1/3 (direct) and 0/2 with the
+// +/-90 transpose — so the orientation that reads upright on a given
+// physical mounting can be picked by eye and reported back for the
+// config default.
+void handlePanelOrientation() {
+  markPortalActivity();
+  int mode = server.arg("mode").toInt();
+  if (mode < 0 || mode > 5) {
+    server.send(400, "text/plain", "Bad mode");
+    return;
+  }
+  panelOrientationRequest = mode;
+  server.send(200, "text/plain", "ok");
 }
 
 void handleDisplayTest() {
@@ -1228,6 +1259,7 @@ void registerPortalRoutes() {
   server.on("/config", HTTP_POST, saveConfig);
   server.on("/update", HTTP_GET, serveUpdatePage);
   server.on("/display/test", HTTP_POST, handleDisplayTest);
+  server.on("/display/orientation", HTTP_POST, handlePanelOrientation);
   server.on("/audio/test", HTTP_POST, handleAudioTest);
   server.on("/battery/status", HTTP_GET, serveBatteryStatus);
   server.on("/board/test", HTTP_POST, handleBoardTest);
@@ -1341,6 +1373,13 @@ bool consumeDisplayTestRequest() {
   if (!displayTestRequested) return false;
   displayTestRequested = false;
   return true;
+}
+
+int consumePanelOrientationRequest() {
+  if (panelOrientationRequest < 0) return -1;
+  int mode = panelOrientationRequest;
+  panelOrientationRequest = -1;
+  return mode;
 }
 
 bool consumeAudioTestRequest(int& outId) {

@@ -561,6 +561,26 @@ void startDataTask() {
 }
 
 void tick(const SportTickContext& ctx) {
+  // ---- Panel orientation picker (diagnostics page, bench tool) ----
+  // Modes A-F: the driver-rotation x transpose combos; applied live, then
+  // the waiting screen repaints so the result is judgeable by eye.
+  int panelMode = consumePanelOrientationRequest();
+  if (panelMode >= 0) {
+    switch (panelMode) {
+      case 0: tftPanel.setOutputMode(1, 0);   break;  // A: direct, rot 1
+      case 1: tftPanel.setOutputMode(3, 0);   break;  // B: direct, rot 3
+      case 2: tftPanel.setOutputMode(0, -90); break;  // C: transpose -90
+      case 3: tftPanel.setOutputMode(0, 90);  break;  // D: transpose +90
+      case 4: tftPanel.setOutputMode(2, -90); break;  // E: rot 2, -90
+      default: tftPanel.setOutputMode(2, 90); break;  // F: rot 2, +90
+    }
+    invalidateManualScreen();
+    resetAtBatResultDisplay();
+    renderWaiting(sHasCurrentSchedule ? &sCurrentSchedule : nullptr,
+                  &sCurrentNews, &sCurrentStandings);
+    return;
+  }
+
   // ---- Portal display self-test (diagnostics page) ----
   if (consumeDisplayTestRequest()) {
     runDisplayTestCycle();

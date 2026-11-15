@@ -95,6 +95,12 @@ bool portalEngaged();
 // the sport layer runs its display test cycle on the render core.
 bool consumeDisplayTestRequest();
 
+// Live panel-orientation picker (diagnostics page, bench tool): POST
+// /display/orientation?mode=0..5 stores the request; the render core
+// consumes it via this accessor and applies the mode through the panel
+// layer, then repaints. -1 when no request is pending.
+int consumePanelOrientationRequest();
+
 // One-shot audio-test trigger from the portal's "Play Test Sound" button
 // (POST /audio/test) or a sound-picker preview (POST /audio/test?id=N).
 // Returns true exactly once per request; outId receives the requested
