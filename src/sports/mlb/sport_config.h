@@ -43,11 +43,15 @@ static const int TFT_NATIVE_HEIGHT = 320;
 // push mode, PSRAM-backed). -90 vs +90 picks the direction; they differ by
 // 180 degrees, so a wrong sign shows the image upside-down — flip it then.
 static const int TFT_ROTATION = 1;
-// Driver rotation used while the transpose mode is active (the picker's
-// winning letter E: lib rotation 2 + -90 transpose — bench-confirmed
-// upright on this module).
-static const int TFT_DRIVER_ROTATION = 2;
-static const int TFT_OUTPUT_ROTATION_DEG = -90;
+// RAW output mode (v3.03, the picker's winning letter I): every push
+// writes the full landscape memory window (cols 0..319 x rows 0..239 —
+// this chip's GRAM is landscape-laid; portrait windows clamp to a
+// 240x240 block) with MADCTL 0x88 (MY|BGR) and the frame vertically
+// flipped to match the sideways mounting. 0 = the legacy lib-transpose
+// path (TFT_DRIVER_ROTATION below) instead.
+static const uint8_t TFT_RAW_MADCTL = 0x88;
+static const int TFT_DRIVER_ROTATION = 2;   // legacy lib-transpose driver rotation
+static const int TFT_OUTPUT_ROTATION_DEG = -90;  // frame handedness (both paths)
 
 // ---- MAX7219 8x8 LED Matrix displays (2 cascaded modules: 0=Away, 1=Home) --
 // DIN was not on the v2.76 rewire list and stays on its old pin — CONFIRM

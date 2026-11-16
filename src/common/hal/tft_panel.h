@@ -15,10 +15,19 @@ class RawWindowILI9341 : public Adafruit_ILI9341 {
     // MUST run inside a transaction: setAddrWindow/writePixels assume the
     // caller opened one (startWrite drops CS); without it every byte goes
     // out with CS high and the panel ignores the whole frame (v2.92).
+    // Written in 80-row CHUNKS with pauses (v3.02): monolithic 76.8k-pixel
+    // streams lose their tail on this bench (early rows render, late rows
+    // go stale — the user-confirmed mode-I signature: bottom-of-frame
+    // tick visible, top of frame missing).
     startWrite();
     sendCommand(ILI9341_MADCTL, &madctl, 1);
-    setAddrWindow(0, 0, w - 1, h - 1);
-    writePixels(pixels, (uint32_t)w * h, true, false);
+    const int kChunk = 80;
+    for (int y0 = 0; y0 < h; y0 += kChunk) {
+      int hh = (h - y0 < kChunk) ? (h - y0) : kChunk;
+      setAddrWindow(0, y0, w - 1, y0 + hh - 1);
+      writePixels(pixels + (size_t)y0 * w, (size_t)w * hh, true, false);
+      delay(8);
+    }
     endWrite();
   }
 };

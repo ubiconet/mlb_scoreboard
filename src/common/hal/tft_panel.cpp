@@ -70,10 +70,15 @@ void TftPanel::begin(int csPin, int dcPin, int mosiPin, int sclkPin,
                   outputRotDeg_, (unsigned)(ESP.getPsramSize() / 1024));
   }
 
-  if (outputRotDeg_ != 0) {
-    // Transpose mode: the driver runs at the bench-verified rotation for
-    // this module's mounting (picker letter E; TFT_DRIVER_ROTATION in
-    // sport_config.h), not the portrait default.
+  if (outputRotDeg_ != 0 && TFT_RAW_MADCTL != 0) {
+    // RAW boot mode (picker letter I): full landscape window per push,
+    // MADCTL from config, frame flip per handedness — see pushRotated.
+    tft_->setRotation(1);  // any rotation; raw writes set MADCTL themselves
+    rawMadctl_ = TFT_RAW_MADCTL;
+    Serial.printf("[HW] panel RAW boot mode: MADCTL 0x%02x\n", rawMadctl_);
+  } else if (outputRotDeg_ != 0) {
+    // Legacy transpose mode: the driver runs at the bench-verified
+    // rotation (picker letter E), not the portrait default.
     tft_->setRotation(TFT_DRIVER_ROTATION);
   } else {
     tft_->setRotation(rotation);

@@ -661,9 +661,9 @@ void tick(const SportTickContext& ctx) {
       // Hold the color card ~12 s (re-pushed so any capture lands on it):
       // remote-bench instrumentation — a webcam shot of this frame answers
       // coverage + orientation for the mode with no timing coordination.
-      for (int i = 0; i < 8; ++i) {
+      for (int i = 0; i < 3; ++i) {
         tftPanel.pushFull();
-        delay(1500);
+        delay(1200);
       }
       sCardInvert = !sCardInvert;
     }
