@@ -578,6 +578,22 @@ void tick(const SportTickContext& ctx) {
       case 8: tftPanel.setRawOutputMode(0xE8, -90); break;  // I: MY|MV|BGR
       default: tftPanel.setRawOutputMode(0xE8, 90); break;  // J: MY|MV|BGR
     }
+    // Announce the mode: full-bleed color + label, so a photo of the
+    // flash shows WHICH mode is active and exactly how far its FULL-frame
+    // write reaches across the glass (bench instrumentation, v2.90).
+    {
+      static const char* const kLetters[] = {"A", "B", "C", "D", "E",
+                                             "F", "G", "H", "I", "J"};
+      GFXcanvas16& c = tftPanel.canvas();
+      c.fillScreen(COLOR_CARD);
+      c.setTextColor(COLOR_GOLD);
+      c.setTextSize(5);
+      char label[10];
+      snprintf(label, sizeof(label), "MODE %s", kLetters[panelMode]);
+      drawCenteredText(c, label, 160, 108);
+      tftPanel.pushFull();
+      delay(1400);
+    }
     invalidateManualScreen();
     resetAtBatResultDisplay();
     renderWaiting(sHasCurrentSchedule ? &sCurrentSchedule : nullptr,
