@@ -212,9 +212,47 @@ bool TftPanel::pushRotated(const uint16_t* src, int rowY, int rowH) {
     }
   }
   if (rawMadctl_ != 0) {
-    // Raw mode owns the panel: the transposed frame goes to the glass's
-    // full native grid in one write (band/stripe packing not applicable).
-    tft_->writeRawFrame(mirror_, pw_, ph_, rawMadctl_);
+    // Raw mode owns the panel. This glass is LANDSCAPE-native: with MV set
+    // the full window is 320 x 240 (native layout), and the physical 90
+    // mounting reduces the output transform to a flip of the logical frame
+    // — per handedness: -90 reverses each row, +90 reverses the row order
+    // (the 0xE8 modes' MY bit flips it once more; those pair -90 with the
+    // 180 and +90 with the identity). Bands are refreshed full-frame; the
+    // mirror keeps the previous frame, so untouched rows carry forward.
+    // (v2.88's 240-wide window here only covered 240 of the 320 columns —
+    // the stale right-hand strip.)
+    const bool neg90 = (outputRotDeg_ < 0);
+    const bool extraFlip = (rawMadctl_ & 0x80) != 0;  // MY bit on 0xE8 modes
+    const uint16_t* src16 = (const uint16_t*)src;
+    if (!extraFlip) {
+      for (int y = 0; y < h_; ++y) {
+        const uint16_t* srow = src16 + (size_t)y * w_;
+        uint16_t* drow = mirror_ + (size_t)y * w_;
+        if (neg90) {
+          for (int x = 0; x < w_; ++x) drow[w_ - 1 - x] = srow[x];
+        } else {
+          memcpy(drow, srow, (size_t)w_ * sizeof(uint16_t));
+        }
+      }
+      if (!neg90) {
+        // +90 handedness = reversed row order: rebuild from the copy above.
+        for (int y = 0; y < h_; ++y) {
+          memcpy(mirror_ + (size_t)(h_ - 1 - y) * w_,
+                 src16 + (size_t)y * w_, (size_t)w_ * sizeof(uint16_t));
+        }
+      }
+    } else {
+      for (int y = 0; y < h_; ++y) {
+        const uint16_t* srow = src16 + (size_t)y * w_;
+        uint16_t* drow = mirror_ + (size_t)(neg90 ? (h_ - 1 - y) : y) * w_;
+        if (neg90) {
+          for (int x = 0; x < w_; ++x) drow[x] = srow[x];  // 180 total
+        } else {
+          for (int x = 0; x < w_; ++x) drow[w_ - 1 - x] = srow[x];  // MY only
+        }
+      }
+    }
+    tft_->writeRawFrame(mirror_, w_, h_, rawMadctl_);
     return true;
   }
   if (rowH > 0 && rowY > 0 && (rowY + rowH) < h_) {
