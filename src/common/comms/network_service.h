@@ -106,6 +106,10 @@ int consumePanelOrientationRequest();
 // registers and shows them on screen. True exactly once per request.
 bool consumePanelIdRequest();
 
+// Resume request (bench tool): POST /display/resume releases a frozen
+// orientation card so normal rendering continues. True exactly once.
+bool consumePanelResumeRequest();
+
 // One-shot audio-test trigger from the portal's "Play Test Sound" button
 // (POST /audio/test) or a sound-picker preview (POST /audio/test?id=N).
 // Returns true exactly once per request; outId receives the requested

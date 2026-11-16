@@ -633,39 +633,62 @@ void tick(const SportTickContext& ctx) {
           0xFFE0 /* D yellow */, 0xF81F /* E magenta */, 0x07FF /* F cyan */,
           0xF800 /* G red */,   0x07E0 /* H green */, 0x001F /* I blue */,
           0xFFE0 /* J yellow */};
-      // Halves card (v2.97/98): left/right black-white halves that INVERT
-      // on each application — two consecutive captures diffed column-wise
-      // prove coverage (unchanged columns = stale), immune to webcam
-      // angle and lighting.
+      // Frozen decodable card (v3.08): black field, white border frame,
+      // orientation triangle in the logical top-left, gray letter chip at
+      // center. The card STAYS on screen until the next orientation/
+      // panel-id request or an explicit /display/resume — remote bench
+      // control with no timing races.
       static bool sCardInvert = false;
-      // Outline card (v3.00): near-black field + thin white border — the
-      // LOWEST-current full-coverage probe. If this border reaches all
-      // four glass corners, coverage is real and the earlier losses were
-      // load-induced (rail sag dropping frame tails).
       GFXcanvas16& c = tftPanel.canvas();
       c.fillScreen(0x0000);
-      c.fillRect(0, 0, 320, 8, 0xFFFF);
-      c.fillRect(0, 232, 320, 8, 0xFFFF);
-      c.fillRect(0, 0, 8, 240, 0xFFFF);
-      c.fillRect(312, 0, 8, 240, 0xFFFF);
-      if (sCardInvert) {  // second application adds corner ticks
-        c.fillRect(0, 0, 40, 40, 0xFFFF);
-        c.fillRect(280, 200, 40, 40, 0xFFFF);
+      c.fillRect(0, 0, 320, 6, 0xFFFF);          // top border
+      c.fillRect(0, 234, 320, 6, 0xFFFF);        // bottom border
+      c.fillRect(0, 0, 6, 240, 0xFFFF);          // left border
+      c.fillRect(314, 0, 6, 240, 0xFFFF);        // right border
+      // Orientation triangle: points UP in logical space (apex at top).
+      for (int i = 0; i < 36; ++i) {
+        c.fillRect(10 + i, 10 + i, 72 - 2 * i, 2, 0xFFFF);
       }
-      c.fillRect(120, 96, 80, 48, 0x7BEF);
+      c.fillRect(120, 100, 80, 40, 0x7BEF);      // letter chip
       c.setTextColor(0x0000);
       c.setTextSize(3);
       char label[4];
       snprintf(label, sizeof(label), "%s", kLetters[panelMode]);
-      drawCenteredText(c, label, 160, 110);
-      // Hold the color card ~12 s (re-pushed so any capture lands on it):
-      // remote-bench instrumentation — a webcam shot of this frame answers
-      // coverage + orientation for the mode with no timing coordination.
-      for (int i = 0; i < 3; ++i) {
+      drawCenteredText(c, label, 160, 112);
+      for (;;) {
         tftPanel.pushFull();
-        delay(1200);
+        for (int w = 0; w < 12; ++w) {  // ~1.4 s re-push cadence
+          delay(120);
+          int next = consumePanelOrientationRequest();
+          if (next >= 0) {  // apply the new mode and redraw the card
+            panelMode = next;
+            tftPanel.resetPanel();
+            switch (panelMode) {
+              case 0: tftPanel.setOutputMode(1, 0);   break;
+              case 1: tftPanel.setOutputMode(3, 0);   break;
+              case 2: tftPanel.setOutputMode(0, -90); break;
+              case 3: tftPanel.setOutputMode(0, 90);  break;
+              case 4: tftPanel.setOutputMode(2, -90); break;
+              case 5: tftPanel.setOutputMode(2, 90); break;
+              case 6: tftPanel.setRawOutputMode(0x08, -90); break;
+              case 7: tftPanel.setRawOutputMode(0x48, -90); break;
+              case 8: tftPanel.setRawOutputMode(0x88, -90); break;
+              default: tftPanel.setRawOutputMode(0xC8, -90); break;
+            }
+            snprintf(label, sizeof(label), "%s",
+                     kLetters[panelMode < 10 ? panelMode : 9]);
+            c.fillRect(120, 100, 80, 40, 0x7BEF);
+            drawCenteredText(c, label, 160, 112);
+            w = 12;  // restart the re-push cadence
+          }
+          if (consumePanelResumeRequest() || consumePanelIdRequest()) {
+            panelMode = -1;  // signal: leave the freeze loop
+            w = 12;
+            break;
+          }
+        }
+        if (panelMode < 0) break;
       }
-      sCardInvert = !sCardInvert;
     }
     invalidateManualScreen();
     resetAtBatResultDisplay();

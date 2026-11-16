@@ -96,6 +96,9 @@ volatile int panelOrientationRequest = -1;
 // Panel-ID readback request (diagnostics page, bench tool).
 volatile bool panelIdRequest = false;
 
+// Resume request: releases a frozen orientation card.
+volatile bool panelResumeRequest = false;
+
 // Audio-test request from the portal (see consumeAudioTestRequest()).
 // audioTestSoundId carries the picker's preview id; -1 means "the saved
 // selection". The flag/id pair is written before the bool flips, so the
@@ -834,6 +837,12 @@ fetch('/demo/status').then(function(r){return r.json()}).then(function(s){paintD
 // config default.
 // Bench tool: draw the controller identity registers on screen (the
 // webcam photographs the card; the chip ID settles the geometry debate).
+void handlePanelResume() {
+  markPortalActivity();
+  panelResumeRequest = true;
+  server.send(200, "text/plain", "ok");
+}
+
 void handlePanelId() {
   markPortalActivity();
   panelIdRequest = true;
@@ -1279,6 +1288,7 @@ void registerPortalRoutes() {
   server.on("/display/test", HTTP_POST, handleDisplayTest);
   server.on("/display/orientation", HTTP_POST, handlePanelOrientation);
   server.on("/display/panelid", HTTP_POST, handlePanelId);
+  server.on("/display/resume", HTTP_POST, handlePanelResume);
   server.on("/audio/test", HTTP_POST, handleAudioTest);
   server.on("/battery/status", HTTP_GET, serveBatteryStatus);
   server.on("/board/test", HTTP_POST, handleBoardTest);
@@ -1404,6 +1414,12 @@ int consumePanelOrientationRequest() {
 bool consumePanelIdRequest() {
   if (!panelIdRequest) return false;
   panelIdRequest = false;
+  return true;
+}
+
+bool consumePanelResumeRequest() {
+  if (!panelResumeRequest) return false;
+  panelResumeRequest = false;
   return true;
 }
 
