@@ -10,25 +10,40 @@
 class RawWindowILI9341 : public Adafruit_ILI9341 {
  public:
   using Adafruit_ILI9341::Adafruit_ILI9341;
-  void writeRawFrame(uint16_t* pixels, uint16_t w, uint16_t h,
-                     uint8_t madctl) {
-    // MUST run inside a transaction: setAddrWindow/writePixels assume the
-    // caller opened one (startWrite drops CS); without it every byte goes
-    // out with CS high and the panel ignores the whole frame (v2.92).
-    // Written in 80-row CHUNKS with pauses (v3.02): monolithic 76.8k-pixel
-    // streams lose their tail on this bench (early rows render, late rows
-    // go stale — the user-confirmed mode-I signature: bottom-of-frame
-    // tick visible, top of frame missing).
+  void writeRawFrameFlipped(const uint16_t* src, uint16_t w, uint16_t h,
+                            uint8_t madctl, bool reverseRows,
+                            bool flipRows) {
+    // Streams the frame to the glass's full native window with only ORDER
+    // transforms (v3.05: no mirror buffer, no PSRAM — flips are row
+    // ordering): reverseRows = vertical flip (MY), flipRows = horizontal
+    // (MX; a 640-byte scratch reverses each row). MUST run inside a
+    // transaction (startWrite drops CS — v2.92's silent-write bug), and
+    // written in 80-row CHUNKS with pauses (v3.02: monolithic streams
+    // lose their tail — early rows render, late rows go stale).
     startWrite();
     sendCommand(ILI9341_MADCTL, &madctl, 1);
+    uint16_t rowBuf[320];
     const int kChunk = 80;
     for (int y0 = 0; y0 < h; y0 += kChunk) {
       int hh = (h - y0 < kChunk) ? (h - y0) : kChunk;
       setAddrWindow(0, y0, w - 1, y0 + hh - 1);
-      writePixels(pixels + (size_t)y0 * w, (size_t)w * hh, true, false);
+      for (int r = 0; r < hh; ++r) {
+        int sy = reverseRows ? (h - 1 - (y0 + r)) : (y0 + r);
+        const uint16_t* row = src + (size_t)sy * w;
+        if (flipRows) {
+          for (int x = 0; x < w; ++x) rowBuf[x] = row[w - 1 - x];
+          writePixels(rowBuf, w, true, false);
+        } else {
+          writePixels((uint16_t*)row, w, true, false);
+        }
+      }
       delay(8);
     }
     endWrite();
+  }
+  void writeRawFrame(const uint16_t* pixels, uint16_t w, uint16_t h,
+                     uint8_t madctl) {
+    writeRawFrameFlipped(pixels, w, h, madctl, false, false);
   }
 };
 
@@ -137,6 +152,7 @@ class TftPanel {
   // mirror; rows [rowY, rowY+rowH) when rowH > 0 push just that stripe
   // (packed via scratch_). Returns false when the transpose buffers are
   // unavailable — callers fall back to the direct path.
+  bool ensureTransposeBuffers();   // lazy PSRAM bring-up (see .cpp)
   bool pushRotated(const uint16_t* src, int rowY, int rowH);
 
   RawWindowILI9341* tft_ = nullptr;  // raw subclass; base API still applies

@@ -54,18 +54,18 @@ void TftPanel::begin(int csPin, int dcPin, int mosiPin, int sclkPin,
           (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
     }
     if (mirror_ == nullptr || scratch_ == nullptr) {
-      // PSRAM unexpectedly unavailable — degrade to direct output rather
-      // than blanking the board (the image then sits sideways, matching
-      // the physical mounting).
+      // PSRAM not up YET (observed at v3.03 boot: the first psramInit()
+      // right at sport::setup fails, while a retry later in the session
+      // succeeds). Keep the mode PENDING — ensureTransposeBuffers()
+      // retries on every push until the buffers land.
       free(mirror_);
       free(scratch_);
       mirror_ = scratch_ = nullptr;
-      outputRotDeg_ = 0;
-      Serial.println("[HW] PSRAM unavailable - panel output stays DIRECT "
-                     "(image will sit sideways)");
+      Serial.println("[HW] PSRAM not ready at boot - transpose buffers "
+                     "pending (lazy retry on every push)");
     }
   }
-  if (outputRotDeg_ != 0) {
+  if (outputRotDeg_ != 0 && mirror_ != nullptr) {
     Serial.printf("[HW] panel output rotation %d active (PSRAM %u KB)\n",
                   outputRotDeg_, (unsigned)(ESP.getPsramSize() / 1024));
   }
@@ -105,23 +105,8 @@ void TftPanel::setBacklight(bool on) {
 void TftPanel::setRawOutputMode(uint8_t madctl, int transposeDeg) {
   if (tft_ == nullptr) return;
   transposeDeg = (transposeDeg == 90) ? 90 : -90;
-  if (mirror_ == nullptr) {
-    if (!psramFound()) psramInit();
-    if (psramFound()) {
-      if (mirror_ == nullptr) {
-        mirror_ = (uint16_t*)heap_caps_malloc(
-            (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-      }
-      if (scratch_ == nullptr) {
-        scratch_ = (uint16_t*)heap_caps_malloc(
-            (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
-      }
-    }
-    if (mirror_ == nullptr) {
-      Serial.println("[HW] PSRAM unavailable - raw mode rejected");
-      return;
-    }
-  }
+  // (v3.05: raw mode no longer needs the transpose buffers — it streams
+  // order-flips straight from the canvas.)
   rawMadctl_ = 0;        // leave any previous raw mode first
   outputRotDeg_ = transposeDeg;
   rawMadctl_ = madctl;
@@ -213,12 +198,54 @@ void TftPanel::releaseCanvas() {
   sCanvasPtr = nullptr;
 }
 
+// Lazy transpose-buffer bring-up (v3.04): the boot-time psramInit can
+// fail while a mid-session retry succeeds; every rotated/raw push calls
+// this until the buffers land. Rate-limited to one attempt per second.
+bool TftPanel::ensureTransposeBuffers() {
+  if (mirror_ != nullptr && scratch_ != nullptr) return true;
+  static uint32_t sLastTryAt = 0;
+  uint32_t now = millis();
+  if (sLastTryAt != 0 && now - sLastTryAt < 1000) return false;
+  sLastTryAt = now;
+  if (!psramFound()) psramInit();
+  if (!psramFound()) return false;
+  if (mirror_ == nullptr) {
+    mirror_ = (uint16_t*)heap_caps_malloc(
+        (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+  }
+  if (scratch_ == nullptr) {
+    scratch_ = (uint16_t*)heap_caps_malloc(
+        (size_t)pw_ * ph_ * sizeof(uint16_t), MALLOC_CAP_SPIRAM);
+  }
+  if (mirror_ == nullptr || scratch_ == nullptr) return false;
+  Serial.printf("[HW] transpose buffers up (PSRAM %u KB)\n",
+                (unsigned)(ESP.getPsramSize() / 1024));
+  return true;
+}
+
 bool TftPanel::pushRotated(const uint16_t* src, int rowY, int rowH) {
-  if (mirror_ == nullptr || scratch_ == nullptr || src == nullptr) {
+  if (src == nullptr) {
     return false;
   }
-  // Transpose the requested logical rows into the panel-portrait mirror.
-  // The two directions are proper 90° rotations that differ by 180°:
+  if (rawMadctl_ != 0) {
+    // Raw mode (v3.05) FIRST: streams straight from the source frame with
+    // only ORDER transforms — vertical flip = reversed row order (the
+    // 0x88/MY winning mode I), horizontal = per-row reverse (0x48/MX).
+    // No mirror buffer, no PSRAM — this board's PSRAM proves unreliable
+    // at boot, and the raw path never needed a copy anyway. Bands
+    // refresh full-frame.
+    const bool flipRows = (rawMadctl_ & 0x40) != 0;    // MX
+    const bool reverseRows = (rawMadctl_ & 0x80) != 0; // MY
+    tft_->writeRawFrameFlipped(src, w_, h_, rawMadctl_, reverseRows,
+                               flipRows);
+    return true;
+  }
+  if (!ensureTransposeBuffers()) {
+    return false;  // caller falls back to direct output this frame
+  }
+  // Legacy lib-transpose path: transpose the requested logical rows into
+  // the panel-portrait mirror. The two directions are proper 90°
+  // rotations that differ by 180°:
   //   -90: mirror[(w_-1-x)*pw_ + y]        = src[y*w_ + x]
   //   +90: mirror[ x     *pw_ + (h_-1-y)]  = src[y*w_ + x]
   const int y0 = (rowH > 0) ? rowY : 0;
@@ -237,64 +264,6 @@ bool TftPanel::pushRotated(const uint16_t* src, int rowY, int rowH) {
         mirror_[(size_t)x * pw_ + (h_ - 1 - y)] = row[x];
       }
     }
-  }
-  if (rawMadctl_ != 0) {
-    // Raw mode owns the panel. This glass is LANDSCAPE-native: with MV set
-    // the full window is 320 x 240 (native layout), and the physical 90
-    // mounting reduces the output transform to a flip of the logical frame
-    // — per handedness: -90 reverses each row, +90 reverses the row order
-    // (the 0xE8 modes' MY bit flips it once more; those pair -90 with the
-    // 180 and +90 with the identity). Bands are refreshed full-frame; the
-    // mirror keeps the previous frame, so untouched rows carry forward.
-    // (v2.88's 240-wide window here only covered 240 of the 320 columns —
-    // the stale right-hand strip.)
-    const bool neg90 = (outputRotDeg_ < 0);
-    const bool extraFlip = (rawMadctl_ & 0x80) != 0;  // MY bit on 0xE8 modes
-    const uint16_t* src16 = (const uint16_t*)src;
-    if (!extraFlip) {
-      for (int y = 0; y < h_; ++y) {
-        const uint16_t* srow = src16 + (size_t)y * w_;
-        uint16_t* drow = mirror_ + (size_t)y * w_;
-        if (neg90) {
-          for (int x = 0; x < w_; ++x) drow[w_ - 1 - x] = srow[x];
-        } else {
-          memcpy(drow, srow, (size_t)w_ * sizeof(uint16_t));
-        }
-      }
-      if (!neg90) {
-        // +90 handedness = reversed row order: rebuild from the copy above.
-        for (int y = 0; y < h_; ++y) {
-          memcpy(mirror_ + (size_t)(h_ - 1 - y) * w_,
-                 src16 + (size_t)y * w_, (size_t)w_ * sizeof(uint16_t));
-        }
-      }
-    } else {
-      for (int y = 0; y < h_; ++y) {
-        const uint16_t* srow = src16 + (size_t)y * w_;
-        uint16_t* drow = mirror_ + (size_t)(neg90 ? (h_ - 1 - y) : y) * w_;
-        if (neg90) {
-          for (int x = 0; x < w_; ++x) drow[x] = srow[x];  // 180 total
-        } else {
-          for (int x = 0; x < w_; ++x) drow[w_ - 1 - x] = srow[x];  // MY only
-        }
-      }
-    }
-    tft_->writeRawFrame(mirror_, w_, h_, rawMadctl_);
-    return true;
-  }
-  // Full-frame writes go out in 80-row chunks with a pause between: the
-  // bit-banged stream's peak current draw (white-heavy frames sag the
-  // bench rail) dropped the TAIL of monolithic 320-row writes — the
-  // panel lost roughly the last quarter of every frame, which read as
-  // a permanently stale right-hand strip (bench v3.00).
-  if (rowH <= 0 || rowY == 0 || (rowY + rowH) >= h_) {
-    const int kChunk = 80;
-    for (int y0 = 0; y0 < ph_; y0 += kChunk) {
-      int h2 = (ph_ - y0 < kChunk) ? (ph_ - y0) : kChunk;
-      tft_->drawRGBBitmap(0, y0, mirror_ + (size_t)y0 * pw_, pw_, h2);
-      delay(8);
-    }
-    return true;
   }
   if (rowH > 0 && rowY > 0 && (rowY + rowH) < h_) {
     // Band push: logical rows [rowY, rowY+rowH) live in mirror columns
@@ -320,18 +289,16 @@ void TftPanel::pushFull() {
   // read w*h pixels out of the 1x1 stub buffer.
   if (tft_ == nullptr || sCanvasPtr == nullptr) return;
   GFXcanvas16& c = *sCanvasPtr;
-  if (outputRotDeg_ != 0) {
-    pushRotated(c.getBuffer(), 0, 0);
+  if (outputRotDeg_ != 0 && pushRotated(c.getBuffer(), 0, 0)) {
     return;
   }
-  tft_->drawRGBBitmap(0, 0, c.getBuffer(), w_, h_);
+  tft_->drawRGBBitmap(0, 0, c.getBuffer(), w_, h_);  // direct fallback
 }
 
 void TftPanel::pushBand(int y, int h) {
   if (tft_ == nullptr || sCanvasPtr == nullptr) return;
   GFXcanvas16& c = *sCanvasPtr;
-  if (outputRotDeg_ != 0) {
-    pushRotated(c.getBuffer(), y, h);
+  if (outputRotDeg_ != 0 && pushRotated(c.getBuffer(), y, h)) {
     return;
   }
   tft_->drawRGBBitmap(0, y, c.getBuffer() + (size_t)y * w_, w_, h);
@@ -340,10 +307,9 @@ void TftPanel::pushBand(int y, int h) {
 void TftPanel::pushRows(int x, int y, int w, int h) {
   if (tft_ == nullptr || sCanvasPtr == nullptr) return;
   GFXcanvas16& c = *sCanvasPtr;
-  if (outputRotDeg_ != 0) {
-    // Rotated output has no cheap sub-rectangle mapping — refresh the
-    // enclosing full-width band (overdraw within the band is harmless).
-    pushRotated(c.getBuffer(), y, h);
+  if (outputRotDeg_ != 0 && pushRotated(c.getBuffer(), y, h)) {
+    // Rotated output has no cheap sub-rectangle mapping — the band path
+    // refreshed the enclosing full-width band (overdraw is harmless).
     return;
   }
   for (int row = 0; row < h; ++row) {
@@ -354,9 +320,7 @@ void TftPanel::pushRows(int x, int y, int w, int h) {
 
 void TftPanel::pushExternal(const GFXcanvas16& c) {
   if (tft_ == nullptr) return;
-  if (outputRotDeg_ != 0) {
-    if (pushRotated(c.getBuffer(), 0, 0)) return;
-  }
+  if (outputRotDeg_ != 0 && pushRotated(c.getBuffer(), 0, 0)) return;
   tft_->drawRGBBitmap(0, 0, c.getBuffer(), w_, h_);
 }
 
