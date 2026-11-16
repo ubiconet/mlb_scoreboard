@@ -20,11 +20,22 @@ without surprises.
   won't boot without octal PSRAM) — migrating a board requires a USB
   flash, which also writes the new partition table.
 - **Peripherals (MLB build — v2.76 rewire pin map):**
-  - 2.0" ST7789 TFT, 320×240, **software-SPI** on pins
-    `SCK=8, MOSI=9, CS=12, DC=10, RESET=11`, backlight LED line on
-    `GPIO 18` (driven HIGH after a clean panel init, LOW before the
-    low-battery sleep), MISO on GPIO 17 wired but unused (software SPI
-    writes only). See the SPI gotcha note in
+  - 2.0" **ILI9341** TFT (canonically identified via RDDID), 320×240,
+    **software-SPI** on pins `SCK=8, MOSI=9, CS=12, DC=10, RESET=11`,
+    backlight on `GPIO 18` (HIGH after clean init, LOW before the
+    low-battery sleep), MISO on GPIO 17 (wired; used by the diag page's
+    panel-ID reader). The module is mounted ROTATED (header edge right
+    and cannot be turned), so TftPanel runs its **rotate-at-push** mode:
+    UI draws a normal 320×240 landscape canvas, every push transposes
+    through a PSRAM mirror (PSRAM needs the explicit psramInit() in
+    TftPanel::begin — the core does not start it without
+    BOARD_HAS_PSRAM). Bench-verified geometry = driver rotation 2 +
+    -90 transpose (TFT_DRIVER_ROTATION / TFT_OUTPUT_ROTATION_DEG in
+    sport_config). Full-frame pushes go out in 80-row CHUNKS with pauses
+    — monolithic 76.8k-pixel writes lose their tail (~25%) to rail sag
+    on white-heavy frames. The /diag page carries bench tools: the
+    orientation picker (letters A–J) and a panel-ID reader; mode applies
+    hard-reset the panel first. See the SPI gotcha note in
     `memories/repo/hardware_architecture.md` and in
     `src/common/hal/tft_panel.h`.
   - 2× MAX7219 8×8 LED matrices (CS=21, CLK=20, DIN=14 — DIN was not on
