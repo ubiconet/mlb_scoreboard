@@ -573,10 +573,13 @@ void tick(const SportTickContext& ctx) {
       case 3: tftPanel.setOutputMode(0, 90);  break;  // D: transpose +90
       case 4: tftPanel.setOutputMode(2, -90); break;  // E: rot 2, -90
       case 5: tftPanel.setOutputMode(2, 90); break;   // F: rot 2, +90
-      case 6: tftPanel.setRawOutputMode(0x28, -90); break;  // G: MV|BGR
-      case 7: tftPanel.setRawOutputMode(0x28, 90); break;   // H: MV|BGR
-      case 8: tftPanel.setRawOutputMode(0xE8, -90); break;  // I: MY|MV|BGR
-      default: tftPanel.setRawOutputMode(0xE8, 90); break;  // J: MY|MV|BGR
+      // Raw modes v2.91: NO MV bit — this controller keeps its long axis on
+      // CASET (the bench table showed every MV-based mode capped at 240 of
+      // the 320-long axis). Native-landscape window, four flips:
+      case 6: tftPanel.setRawOutputMode(0x08, -90); break;  // G: BGR
+      case 7: tftPanel.setRawOutputMode(0x48, -90); break;  // H: MX|BGR
+      case 8: tftPanel.setRawOutputMode(0x88, -90); break;  // I: MY|BGR
+      default: tftPanel.setRawOutputMode(0xC8, -90); break; // J: MX|MY|BGR
     }
     // Announce the mode: full-bleed color + label, so a photo of the
     // flash shows WHICH mode is active and exactly how far its FULL-frame
