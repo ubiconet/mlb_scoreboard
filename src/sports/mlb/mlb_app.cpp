@@ -561,11 +561,51 @@ void startDataTask() {
 }
 
 void tick(const SportTickContext& ctx) {
+  // ---- Panel ID readback (diagnostics page, bench tool) ----
+  if (consumePanelIdRequest()) {
+    // Identity registers: 0x04 RDDID (3 params), 0x09 RDDST (4), 0xD3
+    // alt-ID (ST7789/ILI9486 family), 0xBF (ILI9481 family). One card,
+    // held ~12 s for a webcam shot.
+    uint8_t id04[3] = {tftPanel.readCommand8(0x04, 0),
+                       tftPanel.readCommand8(0x04, 1),
+                       tftPanel.readCommand8(0x04, 2)};
+    uint8_t idd3[3] = {tftPanel.readCommand8(0xD3, 0),
+                       tftPanel.readCommand8(0xD3, 1),
+                       tftPanel.readCommand8(0xD3, 2)};
+    uint8_t idbf[3] = {tftPanel.readCommand8(0xBF, 0),
+                       tftPanel.readCommand8(0xBF, 1),
+                       tftPanel.readCommand8(0xBF, 2)};
+    GFXcanvas16& c = tftPanel.canvas();
+    c.fillScreen(COLOR_BG);
+    c.setTextColor(COLOR_GOLD);
+    c.setTextSize(2);
+    drawCenteredText(c, "PANEL ID", 160, 20);
+    char line[40];
+    c.setTextColor(0xFFFF);
+    snprintf(line, sizeof(line), "04: %02X %02X %02X", id04[0], id04[1],
+             id04[2]);
+    drawCenteredText(c, line, 160, 70);
+    snprintf(line, sizeof(line), "D3: %02X %02X %02X", idd3[0], idd3[1],
+             idd3[2]);
+    drawCenteredText(c, line, 160, 105);
+    snprintf(line, sizeof(line), "BF: %02X %02X %02X", idbf[0], idbf[1],
+             idbf[2]);
+    drawCenteredText(c, line, 160, 140);
+    for (int i = 0; i < 8; ++i) {
+      tftPanel.pushFull();
+      delay(1500);
+    }
+    renderWaiting(sHasCurrentSchedule ? &sCurrentSchedule : nullptr,
+                  &sCurrentNews, &sCurrentStandings);
+    return;
+  }
+
   // ---- Panel orientation picker (diagnostics page, bench tool) ----
   // Modes A-F: the driver-rotation x transpose combos; applied live, then
   // the waiting screen repaints so the result is judgeable by eye.
   int panelMode = consumePanelOrientationRequest();
   if (panelMode >= 0) {
+    tftPanel.resetPanel();  // clear any wedged controller state first
     switch (panelMode) {
       case 0: tftPanel.setOutputMode(1, 0);   break;  // A: direct, rot 1
       case 1: tftPanel.setOutputMode(3, 0);   break;  // B: direct, rot 3
@@ -587,15 +627,45 @@ void tick(const SportTickContext& ctx) {
     {
       static const char* const kLetters[] = {"A", "B", "C", "D", "E",
                                              "F", "G", "H", "I", "J"};
+      // Distinct flash colors: coverage/orientation readable without text.
+      static const uint16_t kColors[] = {
+          0xF800 /* A red */,   0x07E0 /* B green */, 0x001F /* C blue */,
+          0xFFE0 /* D yellow */, 0xF81F /* E magenta */, 0x07FF /* F cyan */,
+          0xF800 /* G red */,   0x07E0 /* H green */, 0x001F /* I blue */,
+          0xFFE0 /* J yellow */};
+      // Halves card (v2.97/98): left/right black-white halves that INVERT
+      // on each application — two consecutive captures diffed column-wise
+      // prove coverage (unchanged columns = stale), immune to webcam
+      // angle and lighting.
+      static bool sCardInvert = false;
+      // Outline card (v3.00): near-black field + thin white border — the
+      // LOWEST-current full-coverage probe. If this border reaches all
+      // four glass corners, coverage is real and the earlier losses were
+      // load-induced (rail sag dropping frame tails).
       GFXcanvas16& c = tftPanel.canvas();
-      c.fillScreen(COLOR_CARD);
-      c.setTextColor(COLOR_GOLD);
-      c.setTextSize(5);
-      char label[10];
-      snprintf(label, sizeof(label), "MODE %s", kLetters[panelMode]);
-      drawCenteredText(c, label, 160, 108);
-      tftPanel.pushFull();
-      delay(1400);
+      c.fillScreen(0x0000);
+      c.fillRect(0, 0, 320, 8, 0xFFFF);
+      c.fillRect(0, 232, 320, 8, 0xFFFF);
+      c.fillRect(0, 0, 8, 240, 0xFFFF);
+      c.fillRect(312, 0, 8, 240, 0xFFFF);
+      if (sCardInvert) {  // second application adds corner ticks
+        c.fillRect(0, 0, 40, 40, 0xFFFF);
+        c.fillRect(280, 200, 40, 40, 0xFFFF);
+      }
+      c.fillRect(120, 96, 80, 48, 0x7BEF);
+      c.setTextColor(0x0000);
+      c.setTextSize(3);
+      char label[4];
+      snprintf(label, sizeof(label), "%s", kLetters[panelMode]);
+      drawCenteredText(c, label, 160, 110);
+      // Hold the color card ~12 s (re-pushed so any capture lands on it):
+      // remote-bench instrumentation — a webcam shot of this frame answers
+      // coverage + orientation for the mode with no timing coordination.
+      for (int i = 0; i < 8; ++i) {
+        tftPanel.pushFull();
+        delay(1500);
+      }
+      sCardInvert = !sCardInvert;
     }
     invalidateManualScreen();
     resetAtBatResultDisplay();

@@ -93,6 +93,9 @@ volatile bool displayTestRequested = false;
 // Volatile for the same cross-core handoff as the flags above.
 volatile int panelOrientationRequest = -1;
 
+// Panel-ID readback request (diagnostics page, bench tool).
+volatile bool panelIdRequest = false;
+
 // Audio-test request from the portal (see consumeAudioTestRequest()).
 // audioTestSoundId carries the picker's preview id; -1 means "the saved
 // selection". The flag/id pair is written before the bool flips, so the
@@ -775,6 +778,9 @@ hr{border:0;border-top:1px solid #1c4587;margin:20px 0}
 <button id="demoStart" type="button" style="margin-top:8px" onclick="setDemo(true)">Start Game Demo</button>
 <button id="demoStop" type="button" style="margin-top:8px;background:#2a5daf;color:#fff;display:none" onclick="setDemo(false)">Stop Game Demo</button>
 <p class="hint" id="demoStatus">Demo is stopped.</p>
+<hr><h3>Panel ID <small>(bench tool)</small></h3>
+<p class="hint">Reads the display controller's identity registers and shows them on screen.</p>
+<button type="button" onclick="fetch('/display/panelid',{method:'POST'})">Read Panel ID</button>
 <hr><h3>Panel Orientation <small>(bench tool)</small></h3>
 <p class="hint">Tries the six panel output modes live — click each letter and watch the scoreboard screen; one will read upright. Tell support the winning letter.</p>
 <p style="display:flex;gap:6px;flex-wrap:wrap">
@@ -826,6 +832,14 @@ fetch('/demo/status').then(function(r){return r.json()}).then(function(s){paintD
 // +/-90 transpose — so the orientation that reads upright on a given
 // physical mounting can be picked by eye and reported back for the
 // config default.
+// Bench tool: draw the controller identity registers on screen (the
+// webcam photographs the card; the chip ID settles the geometry debate).
+void handlePanelId() {
+  markPortalActivity();
+  panelIdRequest = true;
+  server.send(200, "text/plain", "ok");
+}
+
 void handlePanelOrientation() {
   markPortalActivity();
   int mode = server.arg("mode").toInt();
@@ -1264,6 +1278,7 @@ void registerPortalRoutes() {
   server.on("/update", HTTP_GET, serveUpdatePage);
   server.on("/display/test", HTTP_POST, handleDisplayTest);
   server.on("/display/orientation", HTTP_POST, handlePanelOrientation);
+  server.on("/display/panelid", HTTP_POST, handlePanelId);
   server.on("/audio/test", HTTP_POST, handleAudioTest);
   server.on("/battery/status", HTTP_GET, serveBatteryStatus);
   server.on("/board/test", HTTP_POST, handleBoardTest);
@@ -1384,6 +1399,12 @@ int consumePanelOrientationRequest() {
   int mode = panelOrientationRequest;
   panelOrientationRequest = -1;
   return mode;
+}
+
+bool consumePanelIdRequest() {
+  if (!panelIdRequest) return false;
+  panelIdRequest = false;
+  return true;
 }
 
 bool consumeAudioTestRequest(int& outId) {

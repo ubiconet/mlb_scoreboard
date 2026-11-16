@@ -43,6 +43,10 @@ static const int TFT_NATIVE_HEIGHT = 320;
 // push mode, PSRAM-backed). -90 vs +90 picks the direction; they differ by
 // 180 degrees, so a wrong sign shows the image upside-down — flip it then.
 static const int TFT_ROTATION = 1;
+// Driver rotation used while the transpose mode is active (the picker's
+// winning letter E: lib rotation 2 + -90 transpose — bench-confirmed
+// upright on this module).
+static const int TFT_DRIVER_ROTATION = 2;
 static const int TFT_OUTPUT_ROTATION_DEG = -90;
 
 // ---- MAX7219 8x8 LED Matrix displays (2 cascaded modules: 0=Away, 1=Home) --

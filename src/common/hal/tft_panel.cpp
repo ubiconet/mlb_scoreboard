@@ -19,6 +19,7 @@ void TftPanel::begin(int csPin, int dcPin, int mosiPin, int sclkPin,
                                 misoPin);
   }
   backlightPin_ = backlightPin;
+  resetPin_ = resetPin;
   if (backlightPin_ >= 0) {
     // Claim the line but stay dark until the panel holds a clean frame.
     pinMode(backlightPin_, OUTPUT);
@@ -70,7 +71,10 @@ void TftPanel::begin(int csPin, int dcPin, int mosiPin, int sclkPin,
   }
 
   if (outputRotDeg_ != 0) {
-    tft_->setRotation(0);
+    // Transpose mode: the driver runs at the bench-verified rotation for
+    // this module's mounting (picker letter E; TFT_DRIVER_ROTATION in
+    // sport_config.h), not the portrait default.
+    tft_->setRotation(TFT_DRIVER_ROTATION);
   } else {
     tft_->setRotation(rotation);
   }
@@ -118,6 +122,24 @@ void TftPanel::setRawOutputMode(uint8_t madctl, int transposeDeg) {
   rawMadctl_ = madctl;
   Serial.printf("[HW] panel RAW output mode: MADCTL 0x%02x, transpose %d\n",
                 madctl, transposeDeg);
+}
+
+void TftPanel::resetPanel() {
+  if (tft_ == nullptr) return;
+  rawMadctl_ = 0;
+  // Hard reset: the controller's reset line, then the full init sequence.
+  // Heals any wedged state (bench v2.98: after register experiments the
+  // panel held GRAM and ignored writes until this).
+  if (resetPin_ >= 0) {
+    pinMode(resetPin_, OUTPUT);
+    digitalWrite(resetPin_, LOW);
+    delay(20);
+    digitalWrite(resetPin_, HIGH);
+    delay(120);
+  }
+  tft_->begin();
+  if (backlightPin_ >= 0) digitalWrite(backlightPin_, HIGH);
+  Serial.println("[HW] panel hard reset");
 }
 
 void TftPanel::setOutputMode(int driverRotation, int transposeDeg) {
@@ -253,6 +275,20 @@ bool TftPanel::pushRotated(const uint16_t* src, int rowY, int rowH) {
       }
     }
     tft_->writeRawFrame(mirror_, w_, h_, rawMadctl_);
+    return true;
+  }
+  // Full-frame writes go out in 80-row chunks with a pause between: the
+  // bit-banged stream's peak current draw (white-heavy frames sag the
+  // bench rail) dropped the TAIL of monolithic 320-row writes — the
+  // panel lost roughly the last quarter of every frame, which read as
+  // a permanently stale right-hand strip (bench v3.00).
+  if (rowH <= 0 || rowY == 0 || (rowY + rowH) >= h_) {
+    const int kChunk = 80;
+    for (int y0 = 0; y0 < ph_; y0 += kChunk) {
+      int h2 = (ph_ - y0 < kChunk) ? (ph_ - y0) : kChunk;
+      tft_->drawRGBBitmap(0, y0, mirror_ + (size_t)y0 * pw_, pw_, h2);
+      delay(8);
+    }
     return true;
   }
   if (rowH > 0 && rowY > 0 && (rowY + rowH) < h_) {

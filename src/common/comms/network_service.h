@@ -101,6 +101,11 @@ bool consumeDisplayTestRequest();
 // layer, then repaints. -1 when no request is pending.
 int consumePanelOrientationRequest();
 
+// Panel-ID readback request (diagnostics page, bench tool): POST
+// /display/panelid; the render core reads the controller's identity
+// registers and shows them on screen. True exactly once per request.
+bool consumePanelIdRequest();
+
 // One-shot audio-test trigger from the portal's "Play Test Sound" button
 // (POST /audio/test) or a sound-picker preview (POST /audio/test?id=N).
 // Returns true exactly once per request; outId receives the requested

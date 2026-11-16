@@ -12,9 +12,14 @@ class RawWindowILI9341 : public Adafruit_ILI9341 {
   using Adafruit_ILI9341::Adafruit_ILI9341;
   void writeRawFrame(uint16_t* pixels, uint16_t w, uint16_t h,
                      uint8_t madctl) {
+    // MUST run inside a transaction: setAddrWindow/writePixels assume the
+    // caller opened one (startWrite drops CS); without it every byte goes
+    // out with CS high and the panel ignores the whole frame (v2.92).
+    startWrite();
     sendCommand(ILI9341_MADCTL, &madctl, 1);
     setAddrWindow(0, 0, w - 1, h - 1);
     writePixels(pixels, (uint32_t)w * h, true, false);
+    endWrite();
   }
 };
 
@@ -62,6 +67,11 @@ class TftPanel {
   // calling — the previous frame's pixels are reinterpreted, not moved.
   void setOutputMode(int driverRotation, int transposeDeg);
 
+  // Hard-resets the panel (reset pin + full re-init) and clears any raw
+  // override — the picker applies this before every mode so register
+  // experiments can never leave the controller wedged.
+  void resetPanel();
+
   // RAW output mode (picker modes G-J): writes the transposed frame onto
   // the glass's FULL native grid (320 cols x 240 rows) with an explicit
   // MADCTL byte, bypassing the library's rotation geometry — for the
@@ -104,6 +114,12 @@ class TftPanel {
   // rotation and land sideways on a transposed panel.
   Adafruit_ILI9341& raw();
 
+  // Controller register readback (needs SDO/MISO wired) — identifies the
+  // actual panel silicon (RDDID 0x04 / RDDST 0x09 / alt-ID 0xD3).
+  uint8_t readCommand8(uint8_t reg, uint8_t index = 0) {
+    return tft_->readcommand8(reg, index);
+  }
+
   int width() const { return w_; }
   int height() const { return h_; }
 
@@ -116,6 +132,7 @@ class TftPanel {
 
   RawWindowILI9341* tft_ = nullptr;  // raw subclass; base API still applies
   uint8_t rawMadctl_ = 0;       // nonzero while the raw output mode owns the panel
+  int resetPin_ = -1;
   int w_ = 0;
   int h_ = 0;
   int backlightPin_ = -1;
